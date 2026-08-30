@@ -102,10 +102,10 @@ function ctxFor(handler: (call: Call) => Response): { calls: Call[]; ctx: UsageF
   return { calls, ctx: { fetch: fetchImpl } };
 }
 
-function params(accountId = "u-1"): UsageFetchParams {
+function params(accountId = "u-1", email?: string): UsageFetchParams {
   return {
     provider: "zcode",
-    credential: { type: "oauth", accessToken: JWT, accountId },
+    credential: { type: "oauth", accessToken: JWT, accountId, ...(email ? { email } : {}) },
     accountKey: `account:${accountId}`,
   };
 }
@@ -236,6 +236,29 @@ describe("report mapping", () => {
     const { ctx } = ctxFor(() => json(body));
     const report = (await zcodeUsageProvider.fetchUsage(params(), ctx))!;
     expect(report.limits.find((entry) => entry.id === "bucket_53")!.scope.modelId).toBe("GLM-5.3");
+  });
+});
+
+describe("account labeling", () => {
+  it("carries the credential email in report metadata for OMP's usage rows", async () => {
+    const { ctx } = ctxFor(() => json(liveBalance()));
+    const report = (await zcodeUsageProvider.fetchUsage(params("u-1", "lunaris-knight@proton.me"), ctx))!;
+    expect(report.metadata).toEqual({ accountId: "u-1", email: "lunaris-knight@proton.me" });
+  });
+
+  it("still sets accountId when the credential has no email", async () => {
+    const { ctx } = ctxFor(() => json(liveBalance()));
+    const report = (await zcodeUsageProvider.fetchUsage(params("u-1"), ctx))!;
+    expect(report.metadata).toEqual({ accountId: "u-1" });
+  });
+
+  it("keeps the email on the stale report served after a failed refresh", async () => {
+    const { ctx: goodCtx } = ctxFor(() => json(liveBalance()));
+    await zcodeUsageProvider.fetchUsage(params("u-1", "lunaris-knight@proton.me"), goodCtx);
+    const { ctx: badCtx } = ctxFor(() => json({}, 503));
+    const report = (await zcodeUsageProvider.fetchUsage(params("u-1", "lunaris-knight@proton.me"), badCtx))!;
+    expect(report.metadata?.email).toBe("lunaris-knight@proton.me");
+    expect(report.notes!.some((note) => note.startsWith("Stale —"))).toBe(true);
   });
 });
 

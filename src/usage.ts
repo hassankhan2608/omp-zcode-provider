@@ -259,6 +259,14 @@ async function fetchUsage(params: UsageFetchParams, ctx: UsageFetchContext): Pro
     provider: ZCODE_PROVIDER_ID,
     fetchedAt: secondsToMs(envelope.data?.server_time) ?? Date.now(),
     limits,
+    // OMP labels usage rows from `metadata.email` first, then
+    // `metadata.accountId`, then `scope.accountId`. Without the email here the
+    // UI shows the raw UUID, while /login shows the address — both come from
+    // the same stored credential.
+    metadata: {
+      accountId,
+      ...(params.credential.email?.trim() ? { email: params.credential.email.trim() } : {}),
+    },
     ...(activePlans.length > 0 ? { notes: [`Plans: ${activePlans.join(", ")}`] } : {}),
   };
   lastGood.set(cacheKey, report);
