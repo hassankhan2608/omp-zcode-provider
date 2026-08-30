@@ -345,6 +345,99 @@ describe("captcha", () => {
   });
 });
 
+describe("gateway resilience (upstream v4.5.0)", () => {
+
+  it("treats an in-body code:3007 rejection as a captcha challenge (upstream 0b0a4e0)", async () => {
+    const captcha = captchaStub();
+    const inBodyChallenge = new Response(
+      JSON.stringify({ code: 3007, msg: "captcha verify failed" }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+    const { calls } = await dispatch([inBodyChallenge, ok()], captcha);
+    // The gateway did not set the challenge header; the JSON body is the signal.
+    expect(calls[0]!.headers.get("x-aliyun-captcha-verify-param")).toBe("param-1");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.headers.get("x-aliyun-captcha-verify-param")).toBe("param-2");
+    expect(captcha.urgent).toBe(1);
+  });
+
+  it("accepts the spaced code: 3007 body variant too", async () => {
+    const inBodyChallenge = new Response(
+      JSON.stringify({ code: 3007, msg: "captcha verify failed" }).replace('"code":3007', '"code": 3007'),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+    const { calls } = await dispatch([inBodyChallenge, ok()], captchaStub());
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not retry on an ordinary non-ok error body", async () => {
+    const blocked = new Response(JSON.stringify({ code: 3012, msg: "blocked" }), {
+      status: 405,
+      headers: { "content-type": "application/json" },
+    });
+    const { calls } = await dispatch([blocked], captchaStub());
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never retries an in-body challenge on the SSE error path", async () => {
+    const sseChallenge = new Response('{"code":3007,"msg":"captcha"}', {
+      status: 400,
+      headers: { "content-type": "text/event-stream" },
+    });
+    const { calls } = await dispatch([sseChallenge], captchaStub());
+    expect(calls).toHaveLength(1);
+  });
+
+  it("retries transient connect failures up to three attempts (upstream 7dd6818)", async () => {
+    const calls: Array<{ body: string }> = [];
+    let attempt = 0;
+    const fetchImpl = asFetch(async (input, init) => {
+      const request = new Request(input, init);
+      calls.push({ body: await request.text() });
+      attempt += 1;
+      if (attempt < 3) throw new Error("Unable to connect");
+      return ok();
+    });
+    const response = await dispatchStartPlanRequest(
+      { accountId: ACCOUNT, jwt: JWT, fetchImpl, captcha: captchaStub() },
+      "https://api.anthropic.com/v1/messages",
+      { method: "POST", body: messagesBody() },
+    );
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("exhausts connect retries and surfaces the last error", async () => {
+    const fetchImpl = asFetch(async () => {
+      throw new Error("Unable to connect");
+    });
+    const attempt = dispatchStartPlanRequest(
+      { accountId: ACCOUNT, jwt: JWT, fetchImpl, captcha: captchaStub() },
+      "https://api.anthropic.com/v1/messages",
+      { method: "POST", body: messagesBody() },
+    );
+    await expect(attempt).rejects.toThrow(/Unable to connect/);
+  });
+
+  it("does not retry after the client already aborted", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    const fetchImpl = asFetch(async () => {
+      calls += 1;
+      controller.abort();
+      throw new Error("Unable to connect");
+    });
+    const attempt = dispatchStartPlanRequest(
+      { accountId: ACCOUNT, jwt: JWT, fetchImpl, captcha: captchaStub() },
+      "https://api.anthropic.com/v1/messages",
+      { method: "POST", body: messagesBody(), signal: controller.signal },
+    );
+    await expect(attempt).rejects.toThrow(/Unable to connect|aborted/);
+    expect(calls).toBe(1);
+  });
+});
+
+
 describe("errors", () => {
   it("raises a 401 auth error so OMP can try the next account", async () => {
     const attempt = dispatch([new Response("unauthorized", { status: 401 })], captchaStub());

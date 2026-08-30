@@ -54,6 +54,14 @@ export const STARTPLAN_MESSAGES_URL = `${STARTPLAN_ANTHROPIC_BASE}/v1/messages`;
  */
 const PASSTHROUGH_HEADER = "anthropic-beta";
 
+/**
+ * Transient connect-failure retry policy (upstream `0b0a4e0` + `7dd6818`):
+ * three attempts total, linear backoff. The request never reached upstream,
+ * so resending is side-effect-free.
+ */
+const CONNECT_RETRY_ATTEMPTS = 3;
+const CONNECT_RETRY_BACKOFF_MS = 500;
+
 export interface RequestContext {
   /** ZCode `user_id` of the account making the request. */
   accountId: string;
@@ -174,15 +182,23 @@ function buildHeaders(
  * transformed on the way out. The returned `Response` is handed straight back
  * to the transport, streaming body included.
  *
- * Control flow mirrors zcode-api `src/proxy/handler.ts` exactly, in its order:
+ * Control flow mirrors zcode-api `src/proxy/handler.ts` (v4.5.0), in its order:
  *   1. First attempt. A failed captcha solve here is swallowed and the request
  *      goes out unsigned — the gateway is the authority on whether captcha is
  *      required right now.
- *   2. `401` → credential rejected. Checked BEFORE the captcha retry, because a
+ *   2. Transient connect failures (DNS blip, TLS reset) are retried up to
+ *      `CONNECT_RETRY_ATTEMPTS` times with a short backoff — the request never
+ *      reached upstream, so resending is side-effect-free. A fresh `Request`
+ *      is built per attempt: a reused one has its body stream marked used
+ *      after the first fetch.
+ *   3. `401` → credential rejected. Checked BEFORE the captcha retry, because a
  *      dead JWT must not burn a second pooled captcha token.
- *   3. Explicit captcha challenge → cancel the challenged body, take the next
- *      pre-solved token, retry exactly once. A solve failure on the *retry* is
- *      fatal (zcode-api answers 503 `captcha_solver_failed`); by then the
+ *   4. Captcha challenge → retry exactly once with the next pre-solved token.
+ *      The challenge normally arrives as the `x-aliyun-captcha-verify-param`
+ *      response header, but the gateway also emits it as HTTP 400 with
+ *      `{"code":3007,...}` in the JSON body (observed 2026-08-29 upstream);
+ *      both variants trigger the same retry. A solve failure on the *retry*
+ *      is fatal (zcode-api answers 503 `captcha_solver_failed`); by then the
  *      gateway has proven captcha is mandatory, so proceeding unsigned would
  *      only produce a second guaranteed rejection.
  */
@@ -208,14 +224,51 @@ export async function dispatchStartPlanRequest(
       ...(source.signal ? { signal: source.signal } : {}),
     });
 
-  let response = await send(await acquireCaptcha(captcha, appVersion));
+  // Transient connect failures happen a few times a day against the gateway
+  // (upstream 0b0a4e0 + 7dd6818). The request never reached upstream, so
+  // resending is side-effect-free; a fresh Request per attempt keeps the body
+  // stream usable. A client abort is never retried.
+  let response: Response | undefined;
+  for (let attempt = 1; ; attempt++) {
+    if (source.signal?.aborted) throw new Error("Client aborted before upstream connect.");
+    try {
+      response = await send(await acquireCaptcha(captcha, appVersion));
+      break;
+    } catch (error) {
+      if (attempt >= CONNECT_RETRY_ATTEMPTS) throw error;
+      const backoffMs = CONNECT_RETRY_BACKOFF_MS * attempt;
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  response = response!;
 
   if (response.status === 401) {
     state.lastAuthFailureAt = Date.now();
     throw new StartPlanAuthError("ZCode Start Plan credential was rejected. Run /login zcode.");
   }
 
-  if (captchaChallenge(response)) {
+  let challenged = captchaChallenge(response);
+
+  // In-body challenge variant (upstream 0b0a4e0): the gateway sometimes
+  // returns the challenge as HTTP 400 with {"code":3007,...} in the JSON body
+  // instead of the captcha response header. Peek a clone of the body — error
+  // responses are small, and the original body stays untouched for the retry
+  // or the error path.
+  if (!challenged && !response.ok) {
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/event-stream")) {
+      try {
+        const peek = await response.clone().text();
+        if (peek.includes('"code":3007') || peek.includes('"code": 3007')) {
+          challenged = true;
+        }
+      } catch {
+        // An unreadable error body is not a challenge.
+      }
+    }
+  }
+
+  if (challenged) {
     state.captchaFailures += 1;
     state.lastCaptchaFailureAt = Date.now();
     // The challenged token was consumed by the rejected request; drop its body
