@@ -390,6 +390,7 @@ describe("gateway resilience (upstream v4.5.0)", () => {
 
   it("retries transient connect failures up to three attempts (upstream 7dd6818)", async () => {
     const calls: Array<{ body: string }> = [];
+    const captcha = captchaStub();
     let attempt = 0;
     const fetchImpl = asFetch(async (input, init) => {
       const request = new Request(input, init);
@@ -399,12 +400,15 @@ describe("gateway resilience (upstream v4.5.0)", () => {
       return ok();
     });
     const response = await dispatchStartPlanRequest(
-      { accountId: ACCOUNT, jwt: JWT, fetchImpl, captcha: captchaStub() },
+      { accountId: ACCOUNT, jwt: JWT, fetchImpl, captcha },
       "https://api.anthropic.com/v1/messages",
       { method: "POST", body: messagesBody() },
     );
     expect(response.status).toBe(200);
     expect(calls).toHaveLength(3);
+    // The request never reached upstream, so the same captcha token is valid
+    // across all connect retries; only a gateway challenge consumes it.
+    expect(captcha.solves).toBe(1);
   });
 
   it("exhausts connect retries and surfaces the last error", async () => {

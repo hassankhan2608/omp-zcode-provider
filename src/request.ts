@@ -228,16 +228,23 @@ export async function dispatchStartPlanRequest(
   // (upstream 0b0a4e0 + 7dd6818). The request never reached upstream, so
   // resending is side-effect-free; a fresh Request per attempt keeps the body
   // stream usable. A client abort is never retried.
+  const initialCaptcha = await acquireCaptcha(captcha, appVersion);
   let response: Response | undefined;
   for (let attempt = 1; ; attempt++) {
     if (source.signal?.aborted) throw new Error("Client aborted before upstream connect.");
     try {
-      response = await send(await acquireCaptcha(captcha, appVersion));
+      // A connect failure never reached upstream, so the captcha token was not
+      // consumed. Reuse it across connect retries exactly as zcode-api reuses
+      // its pre-built `captchaHeaders`; only a gateway challenge gets a fresh
+      // token below.
+      response = await send(initialCaptcha);
       break;
     } catch (error) {
       if (attempt >= CONNECT_RETRY_ATTEMPTS) throw error;
       const backoffMs = CONNECT_RETRY_BACKOFF_MS * attempt;
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, backoffMs);
+      await promise;
     }
   }
   response = response!;
