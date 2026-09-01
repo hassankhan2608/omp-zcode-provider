@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from "bun:test";
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
-import { createExtension, ZCODE_API_ID, ZCODE_PROVIDER_ID } from "../src/extension.js";
+import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import { createExtension, storedEmailLookup, ZCODE_API_ID, ZCODE_PROVIDER_ID } from "../src/extension.js";
 import { FALLBACK_MODELS } from "../src/models.js";
 import { zcodeUsageProvider } from "../src/usage.js";
 import { asFetch } from "./fetch-stub.js";
@@ -173,5 +174,54 @@ describe("streamSimple transport", () => {
       // An upstream error is expected; a compat TypeError would surface above.
     }
     expect(requested).toBe(true);
+  });
+});
+
+describe("installed-credential labelling", () => {
+  interface StoredRow {
+    id: number;
+    provider: string;
+    disabledCause: string | null;
+    credential: { type: "oauth"; access: string; refresh: string; expires: number; accountId: string; orgId: string; email?: string };
+  }
+
+  const row = (accountId: string, email: string | undefined, orgId: string, disabledCause: string | null = null): StoredRow => ({
+    id: 1,
+    provider: ZCODE_PROVIDER_ID,
+    disabledCause,
+    credential: { type: "oauth", access: "jwt", refresh: "", expires: 0, accountId, orgId, ...(email ? { email } : {}) },
+  });
+
+  const storage = (rows: StoredRow[]): AuthStorage => ({ listStoredCredentials: () => rows }) as unknown as AuthStorage;
+
+  it("resolves the email of the stored account with that user id and family", () => {
+    const lookup = storedEmailLookup(storage([row("u-live", "a@b.dev", "zai"), row("u-other", "c@d.dev", "zai")]));
+    expect(lookup("u-live", "zai")).toBe("a@b.dev");
+  });
+
+  it("keeps families apart so the same user id can hold two plans", () => {
+    const lookup = storedEmailLookup(storage([row("u-live", "a@b.dev", "bigmodel")]));
+    expect(lookup("u-live", "zai")).toBeUndefined();
+    expect(lookup("u-live", "bigmodel")).toBe("a@b.dev");
+  });
+
+  it("ignores disabled rows and rows without an email", () => {
+    expect(storedEmailLookup(storage([row("u-live", "a@b.dev", "zai", "revoked")]))("u-live", "zai")).toBeUndefined();
+    expect(storedEmailLookup(storage([row("u-live", undefined, "zai")]))("u-live", "zai")).toBeUndefined();
+  });
+
+  it("passes a lookup into the oauth factory so the menu can name the account", () => {
+    const { registrations, pi } = fakePi();
+    let received: unknown;
+    createExtension({
+      loadModels: () => FALLBACK_MODELS,
+      discoverModels: async () => FALLBACK_MODELS,
+      createOAuth: (lookup) => {
+        received = lookup;
+        return oauthStub;
+      },
+    })(pi);
+    expect(registrations).toHaveLength(1);
+    expect(typeof received).toBe("function");
   });
 });

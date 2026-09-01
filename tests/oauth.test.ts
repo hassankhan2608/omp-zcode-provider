@@ -56,22 +56,25 @@ function stubFetch(handler: (call: Call) => Response): { calls: Call[]; fetchImp
 }
 
 /** Scripted OMP login callbacks. Answers prompts in order. */
-function callbacks(answers: string[]): OAuthLoginCallbacks & { authUrls: string[]; progress: string[] } {
+function callbacks(answers: string[]): OAuthLoginCallbacks & { authUrls: string[]; progress: string[]; prompts: string[] } {
   const queue = [...answers];
   const authUrls: string[] = [];
   const progress: string[] = [];
+  const prompts: string[] = [];
   return {
     authUrls,
     progress,
+    prompts,
     onAuth(info) {
       authUrls.push(info.url);
     },
     onProgress(message) {
       progress.push(message);
     },
-    async onPrompt() {
+    async onPrompt(prompt) {
+      prompts.push(prompt.message);
       const next = queue.shift();
-      if (next === undefined) throw new Error("unexpected prompt");
+      if (next === undefined) throw new Error(`unexpected prompt: ${prompt.message}`);
       return next;
     },
   };
@@ -360,49 +363,111 @@ describe("account identity across repeated logins", () => {
   });
 });
 
-describe("login modes", () => {
-  it("imports the installed credential", async () => {
+describe("login menu", () => {
+  const installed = (userId = "u-live"): ImportedCredential[] => [
+    { credential: { jwt: PLAN_JWT, provider: "zai", userId, issuedAt: 1 }, enabled: true },
+  ];
+
+  const browserFetch = (): typeof fetch =>
+    stubFetch((call) =>
+      call.url.endsWith("/oauth/cli/init")
+        ? envelope({ flow_id: "f-1", authorize_url: "https://chat.z.ai/go", expires_at: 9e9, poll_interval_sec: 1 })
+        : envelope({ status: "ready", token: PLAN_JWT, zai: { access_token: "at" } }),
+    ).fetchImpl;
+
+  it("offers the browser flow first and numbers every option contiguously", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: installed, fetchImpl: browserFetch(), now: () => 1_000, sleep: noSleep });
+    const cb = callbacks(["1"]);
+    await oauth.login(cb);
+
+    const menu = cb.prompts[0]!;
+    const numbered = menu.split("\n").filter((line) => /^\d+\)/.test(line.trim()));
+    expect(numbered[0]).toMatch(/^1\) browser/);
+    expect(numbered.map((line) => Number(line.trim().split(")")[0]))).toEqual(
+      numbered.map((_, index) => index + 1),
+    );
+  });
+
+  it("labels the installed credential with the stored account email when known", async () => {
     const oauth = createZCodeOAuth({
-      readInstalled: () => [
-        { credential: { jwt: PLAN_JWT, provider: "zai", userId: "u-live", issuedAt: 1 }, enabled: true },
-      ],
+      readInstalled: installed,
+      lookupEmail: (userId, provider) => (userId === "u-live" && provider === "zai" ? "a@b.dev" : undefined),
       now: () => 1_000,
     });
+    const cb = callbacks(["import"]);
+    await oauth.login(cb);
+    expect(cb.prompts[0]!).toContain("a@b.dev");
+  });
+
+  it("falls back to the account id when no stored email matches", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: installed, now: () => 1_000 });
+    const cb = callbacks(["import"]);
+    await oauth.login(cb);
+    expect(cb.prompts[0]!).toContain("u-live");
+  });
+
+  it("never asks a follow-up question for a browser login", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: () => [], fetchImpl: browserFetch(), now: () => 1_000, sleep: noSleep });
+    const cb = callbacks(["1"]);
+    const stored = (await oauth.login(cb)) as OAuthCredentials;
+    expect(cb.prompts).toHaveLength(1);
+    expect(stored.orgId).toBe("zai");
+    expect(cb.authUrls).toEqual(["https://chat.z.ai/go"]);
+  });
+
+  it("lists only the zai flows: bigmodel stays a backend capability, not a menu choice", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: installed, fetchImpl: browserFetch(), now: () => 1_000, sleep: noSleep });
+    const cb = callbacks(["1"]);
+    await oauth.login(cb);
+
+    const menu = cb.prompts[0]!;
+    expect(menu).toMatch(/^1\) browser/m);
+    expect(menu).not.toContain("bigmodel");
+    expect(menu.split("\n").filter((line) => /^\d+\)/.test(line))).toHaveLength(3);
+  });
+
+  it("echoes the chosen option so the transcript records the selection", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: installed, now: () => 1_000 });
+    const cb = callbacks(["import"]);
+    await oauth.login(cb);
+    expect(cb.progress.join(" ")).toMatch(/Selected .*import/i);
+  });
+
+  it("imports the installed credential", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: installed, now: () => 1_000 });
     const cb = callbacks(["import"]);
     const stored = (await oauth.login(cb)) as OAuthCredentials;
     expect(stored.access).toBe(PLAN_JWT);
     expect(cb.progress.join(" ")).toContain("Imported");
   });
 
-  it("accepts a pasted credential and the provider family", async () => {
+  it("still reaches the bigmodel backend when the answer names it explicitly", async () => {
     const oauth = createZCodeOAuth({ readInstalled: () => [], now: () => 1_000 });
-    const stored = (await oauth.login(callbacks(["paste", `  ${PLAN_JWT}  `, "bigmodel"]))) as OAuthCredentials;
+    const cb = callbacks(["paste bigmodel", `  ${PLAN_JWT}  `]);
+    const stored = (await oauth.login(cb)) as OAuthCredentials;
     expect(stored.access).toBe(PLAN_JWT);
     expect(stored.orgId).toBe("bigmodel");
+    expect(cb.prompts).toHaveLength(2);
+  });
+
+  it("pastes into zai by default, with no family prompt", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: () => [], now: () => 1_000 });
+    const cb = callbacks(["paste", PLAN_JWT]);
+    const stored = (await oauth.login(cb)) as OAuthCredentials;
+    expect(stored.orgId).toBe("zai");
+    expect(cb.prompts).toHaveLength(2);
   });
 
   it("rejects a pasted credential that is not a plan JWT", async () => {
     const oauth = createZCodeOAuth({ readInstalled: () => [], now: () => 1_000 });
-    await expect(oauth.login(callbacks(["paste", "garbage", "zai"]))).rejects.toThrow(/not a JWT/);
+    await expect(oauth.login(callbacks(["paste", "garbage"]))).rejects.toThrow(/not a JWT/);
   });
 
-  it("falls back to paste when import is chosen but nothing is installed", async () => {
-    const oauth = createZCodeOAuth({ readInstalled: () => [], now: () => 1_000 });
-    const stored = (await oauth.login(callbacks(["1", PLAN_JWT, "zai"]))) as OAuthCredentials;
-    expect(stored.access).toBe(PLAN_JWT);
-  });
-
-  it("runs the browser flow when chosen", async () => {
-    const { fetchImpl } = stubFetch((call) =>
-      call.url.endsWith("/oauth/cli/init")
-        ? envelope({ flow_id: "f-1", authorize_url: "https://chat.z.ai/go", expires_at: 9e9, poll_interval_sec: 1 })
-        : envelope({ status: "ready", token: PLAN_JWT, zai: { access_token: "at" } }),
-    );
-    const oauth = createZCodeOAuth({ readInstalled: () => [], fetchImpl, now: () => 1_000, sleep: noSleep });
-    const cb = callbacks(["browser", "zai"]);
+  it("falls back to the browser flow when the answer matches nothing", async () => {
+    const oauth = createZCodeOAuth({ readInstalled: () => [], fetchImpl: browserFetch(), now: () => 1_000, sleep: noSleep });
+    const cb = callbacks(["???"]);
     const stored = (await oauth.login(cb)) as OAuthCredentials;
     expect(stored.access).toBe(PLAN_JWT);
-    expect(cb.authUrls).toEqual(["https://chat.z.ai/go"]);
   });
 });
 

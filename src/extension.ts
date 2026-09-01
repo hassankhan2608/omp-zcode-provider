@@ -22,7 +22,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ExtensionAPI, ExtensionCommandContext, ProviderConfig, ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 import type { CaptchaModule } from "./captcha-module.js";
 import { loadCaptcha } from "./captcha-module.js";
-import { createZCodeOAuth } from "./oauth.js";
+import { createZCodeOAuth, type EmailLookup } from "./oauth.js";
 import { dispatchStartPlanRequest } from "./request.js";
 import { decodeJwtPayload } from "./credential.js";
 import { cachedStartPlanModels, FALLBACK_MODELS, resolveStartPlanModels } from "./models.js";
@@ -72,7 +72,7 @@ export interface ExtensionDependencies {
   loadModels: () => readonly ProviderModelConfig[];
   /** Live discovery, run lazily by OMP through `fetchDynamicModels`. */
   discoverModels: () => Promise<readonly ProviderModelConfig[]>;
-  createOAuth: () => NonNullable<ProviderConfig["oauth"]>;
+  createOAuth: (lookupEmail?: EmailLookup) => NonNullable<ProviderConfig["oauth"]>;
   fetchImpl?: typeof fetch;
   /** Injectable captcha module; tests pass a stub so no solve is attempted. */
   captcha?: CaptchaModule;
@@ -81,7 +81,7 @@ export interface ExtensionDependencies {
 const defaultDependencies: ExtensionDependencies = {
   loadModels: cachedStartPlanModels,
   discoverModels: resolveStartPlanModels,
-  createOAuth: createZCodeOAuth,
+  createOAuth: (lookupEmail) => createZCodeOAuth({ ...(lookupEmail ? { lookupEmail } : {}) }),
 };
 
 /**
@@ -134,13 +134,21 @@ export function createExtension(deps: ExtensionDependencies = defaultDependencie
     // loader must not be able to register a provider with nothing selectable.
     const registered = models.length > 0 ? models : FALLBACK_MODELS;
 
+    // Registration happens before any session exists, but `/login` always runs
+    // inside one: capture the storage when a session starts and let the menu
+    // read it lazily so installed credentials can be named after their account.
+    let authStorage: AuthStorage | undefined;
+    pi.on("session_start", (_event, ctx) => {
+      authStorage = ctx.modelRegistry.authStorage;
+    });
+
     pi.registerProvider(ZCODE_PROVIDER_ID, {
       baseUrl: STARTPLAN_ANTHROPIC_BASE,
       api: ZCODE_API_ID,
       streamSimple: createStreamSimple(deps.fetchImpl, deps.captcha),
       models: [...registered],
       fetchDynamicModels: async () => [...(await deps.discoverModels())],
-      oauth: deps.createOAuth(),
+      oauth: deps.createOAuth((userId, provider) => (authStorage ? storedEmailLookup(authStorage)(userId, provider) : undefined)),
       usage: zcodeUsageProvider,
     });
 
@@ -161,6 +169,28 @@ function storedAccounts(modelRegistry: { authStorage: AuthStorage }): SchedulerA
     accounts.push({ jwt, accountId, ...(email ? { email } : {}) });
   }
   return accounts;
+}
+
+/**
+ * Resolve a ZCode user id to the email of the matching stored OMP account.
+ *
+ * A Start Plan JWT carries only `user_id`/`sub`/`iat` — never an email — so an
+ * installed credential can only be named after an account that was logged in
+ * through the browser flow, which is where the email comes from. Families are
+ * kept apart: one user id may hold both a `zai` and a `bigmodel` plan.
+ */
+export function storedEmailLookup(authStorage: AuthStorage): EmailLookup {
+  return (userId, provider) => {
+    for (const row of authStorage.listStoredCredentials(ZCODE_PROVIDER_ID)) {
+      const credential = row.credential;
+      if (row.disabledCause !== null || credential.type !== "oauth") continue;
+      if (credential.accountId?.trim() !== userId) continue;
+      if (credential.orgId !== undefined && credential.orgId !== provider) continue;
+      const email = credential.email?.trim();
+      if (email) return email;
+    }
+    return undefined;
+  };
 }
 
 /** One captcha token from the background pool (mints on demand). */

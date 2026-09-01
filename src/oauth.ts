@@ -39,6 +39,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai";
 import type { ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 import {
   importFromZCodeConfig,
+  ZCODE_PROVIDER_IDS,
   parseStartPlanCredential,
   zcodeConfigPath,
   type ImportedCredential,
@@ -437,25 +438,92 @@ export function toOAuthCredentials(credential: StartPlanCredential, now: number 
   };
 }
 
-/** Login modes offered by the prompt. */
-type LoginMode = "import" | "paste" | "browser";
+/** One fully-specified menu entry: the family is part of the choice. */
+interface LoginOption {
+  kind: "browser" | "import" | "paste";
+  provider: ZCodeProviderId;
+  label: string;
+  /** Installed credential behind an `import` entry. */
+  installed?: ImportedCredential;
+}
 
-function normalizeMode(answer: string, hasImport: boolean): LoginMode {
+/** The only family the menu offers; `bigmodel` stays typed-answer only. */
+const MENU_PROVIDER: ZCodeProviderId = "zai";
+
+/**
+ * Build the menu: browser first — it is the only option that works on a
+ * machine without the desktop client — then any installed credential, then
+ * paste. Every entry is a complete choice, so the flow never asks a second
+ * question. Only `zai` is listed; `bigmodel` remains reachable by typing it.
+ */
+function buildLoginOptions(installed: ImportedCredential[], lookupEmail?: EmailLookup): LoginOption[] {
+  const options: LoginOption[] = [
+    { kind: "browser", provider: MENU_PROVIDER, label: "browser — sign in with the ZCode browser flow" },
+  ];
+
+  // Installed credentials are listed whatever their family: the credential
+  // exists on this machine, so hiding it would strand it. Only the browser and
+  // paste flows are pinned to `zai`.
+  for (const entry of installed) {
+    const { provider, userId } = entry.credential;
+    const who = lookupEmail?.(userId, provider) ?? userId;
+    const family = provider === MENU_PROVIDER ? "" : ` [${provider}]`;
+    options.push({
+      kind: "import",
+      provider,
+      installed: entry,
+      label: `import — use the credential in ${zcodeConfigPath()} (${who})${family}`,
+    });
+  }
+
+  options.push({ kind: "paste", provider: MENU_PROVIDER, label: "paste — paste a ZCode Start Plan credential" });
+  return options;
+}
+
+/**
+ * Resolve a free-text answer: a 1-based menu number, or keywords (`import`,
+ * `paste`, `b`). Naming `bigmodel` explicitly reaches that backend even though
+ * it is not listed. Anything unrecognised falls back to the first option.
+ */
+function selectLoginOption(answer: string, options: LoginOption[]): LoginOption {
   const trimmed = answer.trim().toLowerCase();
-  if (trimmed === "1" || trimmed.startsWith("i")) return hasImport ? "import" : "paste";
-  if (trimmed === "2" || trimmed.startsWith("pa")) return "paste";
-  if (trimmed === "3" || trimmed.startsWith("b") || trimmed.startsWith("l")) return "browser";
-  return hasImport ? "import" : "browser";
+  const numbered = Number.parseInt(trimmed, 10);
+  if (Number.isInteger(numbered) && numbered >= 1 && numbered <= options.length) return options[numbered - 1]!;
+
+  const kind: LoginOption["kind"] | undefined = trimmed.startsWith("i")
+    ? "import"
+    : trimmed.startsWith("pa")
+      ? "paste"
+      : trimmed.startsWith("b") && !trimmed.startsWith("big")
+        ? "browser"
+        : trimmed.startsWith("l") || trimmed.startsWith("s")
+          ? "browser"
+          : undefined;
+
+  // Unlisted family: honour it against whichever kind was named.
+  if (trimmed.includes("bigmodel") || trimmed.includes("big")) {
+    const wanted = kind ?? "browser";
+    const installed = options.find((option) => option.kind === "import" && option.provider === "bigmodel");
+    if (wanted === "import") return installed ?? options[0]!;
+    return {
+      kind: wanted,
+      provider: "bigmodel",
+      label: wanted === "paste" ? "paste — paste a ZCode Start Plan credential (bigmodel)" : "browser — sign in with the ZCode browser flow (bigmodel)",
+    };
+  }
+
+  return (kind !== undefined ? options.find((option) => option.kind === kind) : undefined) ?? options[0]!;
 }
 
-function normalizeProvider(answer: string): ZCodeProviderId {
-  return answer.trim().toLowerCase().startsWith("b") ? "bigmodel" : "zai";
-}
+/** Resolve a display name for an installed credential's account. */
+export type EmailLookup = (userId: string, provider: ZCodeProviderId) => string | undefined;
 
 export interface OAuthDependencies {
   fetchImpl?: typeof fetch;
   /** Override the installed-config scan. Test seam. */
   readInstalled?: () => ImportedCredential[];
+  /** Map an installed credential's user id to a known account email. */
+  lookupEmail?: EmailLookup;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -476,48 +544,31 @@ export function createZCodeOAuth(deps: OAuthDependencies = {}): NonNullable<Prov
   return {
     name: "ZCode (Start Plan)",
     async login(callbacks): Promise<OAuthCredentials> {
-      const installed = readInstalled();
-      const menu = [
-        ...(installed.length > 0
-          ? [
-              `1) import — use the credential already in ${zcodeConfigPath()} (${installed
-                .map((entry) => entry.credential.provider)
-                .join(", ")})`,
-            ]
-          : []),
-        "2) paste — paste a ZCode Start Plan credential",
-        "3) browser — sign in with the ZCode browser flow",
-      ].join("\n");
+      const options = buildLoginOptions(readInstalled(), deps.lookupEmail);
+      const menu = options.map((option, index) => `${index + 1}) ${option.label}`).join("\n");
 
-      const mode = normalizeMode(
-        await callbacks.onPrompt({
-          message: `ZCode Start Plan login:\n${menu}\n\nChoose`,
-          placeholder: installed.length > 0 ? "import" : "browser",
-        }),
-        installed.length > 0,
-      );
+      const answer = await callbacks.onPrompt({
+        message: `ZCode Start Plan login:\n${menu}\n\nChoose`,
+        placeholder: "1",
+      });
+      const chosen = selectLoginOption(answer, options);
+      callbacks.onProgress?.(`Selected ${chosen.label}.`);
 
-      if (mode === "import") {
-        const chosen = installed[0];
-        if (!chosen) throw new Error(`No ZCode Start Plan credential found in ${zcodeConfigPath()}`);
-        callbacks.onProgress?.(`Imported ZCode Start Plan credential for ${chosen.credential.provider}.`);
-        return toOAuthCredentials(chosen.credential, now());
+      if (chosen.kind === "import") {
+        const entry = chosen.installed;
+        if (!entry) throw new Error(`No ZCode Start Plan credential found in ${zcodeConfigPath()}`);
+        callbacks.onProgress?.(`Imported ZCode Start Plan credential for ${entry.credential.provider}.`);
+        return toOAuthCredentials(entry.credential, now());
       }
 
-      if (mode === "paste") {
+      if (chosen.kind === "paste") {
         const pasted = await callbacks.onPrompt({
-          message: "Paste the ZCode Start Plan credential (JWT)",
+          message: `Paste the ZCode Start Plan credential (JWT) for ${chosen.provider}`,
         });
-        const provider = normalizeProvider(
-          await callbacks.onPrompt({ message: "Provider family (zai / bigmodel)", placeholder: "zai" }),
-        );
-        return toOAuthCredentials(parseStartPlanCredential(pasted, provider), now());
+        return toOAuthCredentials(parseStartPlanCredential(pasted, chosen.provider), now());
       }
 
-      const provider = normalizeProvider(
-        await callbacks.onPrompt({ message: "Provider family (zai / bigmodel)", placeholder: "zai" }),
-      );
-      const credential = await authorizeInBrowser(provider, callbacks, fetchImpl, deps.sleep);
+      const credential = await authorizeInBrowser(chosen.provider, callbacks, fetchImpl, deps.sleep);
       return toOAuthCredentials(credential, now());
     },
     getApiKey(credentials) {
