@@ -27,6 +27,9 @@ function fakePi(): { registrations: Registration[]; pi: ExtensionAPI } {
     registerProvider(name: string, config: ProviderConfig) {
       registrations.push({ name, config });
     },
+    registerCommand() {},
+    appendEntry() {},
+    on() {},
   } as unknown as ExtensionAPI;
   return { registrations, pi };
 }

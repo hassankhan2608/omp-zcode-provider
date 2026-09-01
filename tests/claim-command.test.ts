@@ -1,0 +1,313 @@
+/**
+ * /claim command + auto-claim wiring tests.
+ * Drives the real createExtension with a fake pi/ctx: stubbed auth storage,
+ * transport, and captcha; asserts preview → selection → confirmation → claim
+ * flow, print-mode safety, and scheduler opt-out.
+ */
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
+import { createExtension, ZCODE_PROVIDER_ID } from "../src/extension.js";
+import { FALLBACK_MODELS } from "../src/models.js";
+import { resetAccountState } from "../src/account-state.js";
+import { asFetch, type FetchHandler } from "./fetch-stub.js";
+
+const oauthStub: NonNullable<ProviderConfig["oauth"]> = {
+  name: "ZCode (Start Plan)",
+  async login() {
+    return "jwt";
+  },
+};
+
+interface Registration {
+  name: string;
+  config: ProviderConfig;
+}
+
+interface FakePi {
+  registrations: Registration[];
+  commands: Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> | void }>;
+  entries: Array<{ customType: string; data: unknown }>;
+  sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void> | void>;
+  api: ExtensionAPI;
+}
+
+function fakePi(): FakePi {
+  const registrations: Registration[] = [];
+  const commands = new Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> | void }>();
+  const entries: Array<{ customType: string; data: unknown }> = [];
+  const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void> | void> = [];
+  const api = {
+    registerProvider(name: string, config: ProviderConfig) {
+      registrations.push({ name, config });
+    },
+    registerCommand(name: string, options: { description?: string; handler: (args: string, ctx: unknown) => Promise<void> | void }) {
+      commands.set(name, options);
+    },
+    appendEntry(customType: string, data?: unknown) {
+      entries.push({ customType, data });
+    },
+    on(event: string, handler: (event: unknown, ctx: unknown) => Promise<void> | void) {
+      if (event === "session_start") sessionStartHandlers.push(handler);
+    },
+  } as unknown as ExtensionAPI;
+  return { registrations, commands, entries, sessionStartHandlers, api };
+}
+
+interface StoredRow {
+  id: number;
+  provider: string;
+  credential: { type: "oauth"; access: string; accountId?: string; email?: string; orgId?: string; orgName?: string };
+  disabledCause: string | null;
+}
+
+function authStorageWith(rows: StoredRow[]) {
+  return { listStoredCredentials: (provider: string) => (provider === ZCODE_PROVIDER_ID ? rows : []) };
+}
+
+interface UiSpy {
+  notifications: string[];
+  selectResult?: string;
+  confirmResult?: boolean;
+  selections: Array<{ title: string; labels: string[] }>;
+  confirmations: string[];
+}
+
+interface FakeCtxOptions {
+  rows: StoredRow[];
+  ui: UiSpy;
+  hasUI?: boolean;
+  intervals?: number[];
+}
+
+function fakeCtx(options: FakeCtxOptions): unknown {
+  const { rows, ui, intervals = [] } = options;
+  return {
+    hasUI: options.hasUI ?? true,
+    ui: {
+      notify: (message: string) => ui.notifications.push(message),
+      async select(_title: string, options: Array<{ label: string }>) {
+        ui.selections.push({ title: _title, labels: options.map((option) => option.label) });
+        return ui.selectResult ?? options[0]?.label;
+      },
+      async confirm(_title: string, message: string) {
+        ui.confirmations.push(`${_title} ${message}`);
+        return ui.confirmResult ?? true;
+      },
+    },
+    modelRegistry: { authStorage: authStorageWith(rows) },
+    setInterval: (_callback: () => void, ms: number) => {
+      intervals.push(ms);
+      return 0 as unknown as NodeJS.Timeout;
+    },
+  };
+}
+
+function activeRow(id: number, email: string, accountId: string): StoredRow {
+  return {
+    id,
+    provider: ZCODE_PROVIDER_ID,
+    credential: {
+      type: "oauth",
+      access: `jwt-${id}`,
+      accountId,
+      email,
+      orgId: "zai",
+      orgName: "ZCode Start Plan (zai)",
+    },
+    disabledCause: null,
+  };
+}
+
+const captchaStub = {
+  async getCaptchaToken() {
+    return { verifyParam: "cap-token", region: "sgp" };
+  },
+  urgentCaptcha() {},
+  async startCaptchaPool() {},
+  shutdownCaptcha() {},
+};
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+const availableBody = {
+  code: 0,
+  data: {
+    plans: [
+      {
+        plan_id: "zcode-v3-start-plan-0901-2",
+        name: "ZCode Global Build",
+        priority: 110,
+        entitlements: [
+          { entitlement_id: "e1", show_name: "GLM-5.3-Flash", grant_units: 100_000_000, unit_type: "token", period: "one_time" },
+        ],
+      },
+    ],
+  },
+};
+
+const claimedBody = { code: 0, data: { plan: { plan_id: "zcode-v3-start-plan-0901-2", starts_at: 1, ends_at: 2 } } };
+
+let handlers: FetchHandler[] = [];
+let handlerIndex = 0;
+
+function sequentialFetch(): typeof fetch {
+  handlerIndex = 0;
+  return asFetch(async (input, init) => {
+    const handler = handlers[Math.min(handlerIndex, handlers.length - 1)]!;
+    handlerIndex += 1;
+    return handler(input, init);
+  });
+}
+
+beforeEach(() => {
+  resetAccountState();
+  handlers = [];
+  handlerIndex = 0;
+});
+
+afterAll(() => {
+  resetAccountState();
+});
+
+function build(rows: StoredRow[], fetchImpl?: typeof fetch): FakePi {
+  const fake = fakePi();
+  void createExtension({
+    loadModels: () => FALLBACK_MODELS,
+    discoverModels: async () => FALLBACK_MODELS,
+    createOAuth: () => oauthStub,
+    captcha: captchaStub,
+    ...(fetchImpl ? { fetchImpl } : {}),
+  })(fake.api);
+  return fake;
+}
+
+async function runCommand(fake: FakePi, ctx: unknown, args = ""): Promise<void> {
+  const command = fake.commands.get("claim");
+  if (!command) throw new Error("/claim not registered");
+  await command.handler(args, ctx);
+}
+
+describe("/claim command", () => {
+  it("registers a claim command", () => {
+    const fake = build([activeRow(1, "a@x.dev", "u-1")]);
+    expect(fake.commands.has("claim")).toBe(true);
+  });
+
+  it("reports when no ZCode accounts are stored", async () => {
+    const fake = build([]);
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
+    await runCommand(fake, fakeCtx({ rows: [], ui }));
+    expect(ui.notifications[0]).toContain("No stored ZCode accounts");
+  });
+
+  it("reports when previews are empty", async () => {
+    handlers = [async () => jsonResponse({ code: 0, data: { plans: [] } })];
+    const fake = build([activeRow(1, "a@x.dev", "u-1")], sequentialFetch());
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
+    await runCommand(fake, fakeCtx({ rows: [activeRow(1, "a@x.dev", "u-1")], ui }));
+    expect(ui.notifications[0]).toContain("No claimable");
+  });
+
+  it("selects, confirms, and claims the chosen plan", async () => {
+    handlers = [async () => jsonResponse(availableBody), async () => jsonResponse(claimedBody)];
+    const fake = build([activeRow(1, "a@x.dev", "u-1")], sequentialFetch());
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
+    await runCommand(fake, fakeCtx({ rows: [activeRow(1, "a@x.dev", "u-1")], ui }));
+
+    expect(ui.selections[0]!.labels[0]).toContain("ZCode Global Build");
+    expect(ui.confirmations).toHaveLength(1);
+    expect(ui.notifications.some((n) => n.toLowerCase().includes("claimed"))).toBe(true);
+  });
+
+  it("does not claim when confirmation is declined", async () => {
+    let claimPosts = 0;
+    handlers = [
+      async () => jsonResponse(availableBody),
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+    ];
+    const fake = build([activeRow(1, "a@x.dev", "u-1")], sequentialFetch());
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [], confirmResult: false };
+    await runCommand(fake, fakeCtx({ rows: [activeRow(1, "a@x.dev", "u-1")], ui }));
+    expect(ui.confirmations).toHaveLength(1);
+    expect(claimPosts).toBe(0);
+  });
+
+  it("lists availability without claiming in print mode (hasUI=false)", async () => {
+    let claimPosts = 0;
+    handlers = [
+      async () => jsonResponse(availableBody),
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+    ];
+    const fake = build([activeRow(1, "a@x.dev", "u-1")], sequentialFetch());
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
+    await runCommand(fake, fakeCtx({ rows: [activeRow(1, "a@x.dev", "u-1")], ui, hasUI: false }));
+    expect(ui.notifications.some((n) => n.includes("ZCode Global Build"))).toBe(true);
+    expect(claimPosts).toBe(0);
+  });
+
+  it("claims every available plan with args=all after one confirmation", async () => {
+    let claimPosts = 0;
+    handlers = [
+      async () => jsonResponse(availableBody),
+      async () => jsonResponse(availableBody),
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+    ];
+    const rows = [activeRow(1, "a@x.dev", "u-1"), activeRow(2, "b@x.dev", "u-2")];
+    const fake = build(rows, sequentialFetch());
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
+    await runCommand(fake, fakeCtx({ rows, ui }), "all");
+    expect(ui.selections).toHaveLength(0);
+    expect(ui.confirmations).toHaveLength(1);
+    expect(claimPosts).toBe(2);
+  });
+});
+
+describe("auto-claim scheduler wiring", () => {
+  function sessionCtx(rows: StoredRow[], intervals: number[]): unknown {
+    return {
+      hasUI: false,
+      modelRegistry: { authStorage: authStorageWith(rows) },
+      setInterval: (_callback: () => void, ms: number) => {
+        intervals.push(ms);
+        return 0 as unknown as NodeJS.Timeout;
+      },
+      ui: { notify: () => {} },
+    };
+  }
+
+  it("starts a contained 5-minute interval on session_start by default", () => {
+    const fake = build([activeRow(1, "a@x.dev", "u-1")]);
+    const intervals: number[] = [];
+    const ctx = sessionCtx([activeRow(1, "a@x.dev", "u-1")], intervals);
+    for (const handler of fake.sessionStartHandlers) void handler({}, ctx);
+    expect(intervals).toEqual([300_000]);
+  });
+
+  it("does not schedule when ZCODE_CLAIM_AUTO=0", () => {
+    const fake = build([activeRow(1, "a@x.dev", "u-1")]);
+    process.env.ZCODE_CLAIM_AUTO = "0";
+    try {
+      const intervals: number[] = [];
+      const ctx = sessionCtx([activeRow(1, "a@x.dev", "u-1")], intervals);
+      for (const handler of fake.sessionStartHandlers) void handler({}, ctx);
+      expect(intervals).toEqual([]);
+    } finally {
+      delete process.env.ZCODE_CLAIM_AUTO;
+    }
+  });
+});

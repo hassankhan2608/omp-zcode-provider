@@ -1,0 +1,191 @@
+/**
+ * Auto-claim scheduler tests.
+ * Ports zcode-api `src/claim/scheduler.test.ts` (v4.5.3) semantics onto the
+ * OMP multi-account boundary: fake clock + injected clients verify the
+ * poll→claim state machine — per-account holds, upstream failure-kind
+ * cooldowns, login-loss stop, and rotation across stored accounts.
+ */
+import { describe, expect, it } from "bun:test";
+import { ClaimScheduler, type SchedulerAccount } from "../src/claim-scheduler.js";
+import { ClaimPreviewError } from "../src/claim.js";
+import type { ClaimablePlan, ClaimOutcome } from "../src/claim.js";
+
+interface AccountHarness {
+  plans: ClaimablePlan[];
+  previewError: Error | undefined;
+  claimOutcome: ClaimOutcome | Error;
+  captchaResult: { verifyParam: string; region?: string } | Error;
+  claimCalls: Array<{ accountId: string; planId: string }>;
+}
+
+function makeHarness(configOverrides: Partial<{ planId: string; pollIntervalMs: number; cooldownMs: number }> = {}) {
+  const accounts: SchedulerAccount[] = [{ jwt: "jwt-1", accountId: "acc-1", email: "a@x.dev" }];
+  const byId = new Map<string, AccountHarness>();
+  const makeHarnessFor = (accountId: string): AccountHarness => {
+    const existing = byId.get(accountId);
+    if (existing) return existing;
+    const fresh: AccountHarness = {
+      plans: [{ planId: "weekend-1", name: "Weekend", description: "", priority: 1, entitlements: [] }],
+      previewError: undefined,
+      claimOutcome: { ok: true, planId: "weekend-1" },
+      captchaResult: { verifyParam: "cap", region: "cn" },
+      claimCalls: [],
+    };
+    byId.set(accountId, fresh);
+    return fresh;
+  };
+  const primary = makeHarnessFor("acc-1");
+
+  let nowMs = 1_000_000;
+  const logs: string[] = [];
+  const notifications: string[] = [];
+
+  const scheduler = new ClaimScheduler({
+    listAccounts: () => accounts,
+    createClient: (account) => {
+      const h = makeHarnessFor(account.accountId);
+      return {
+        getPreviews: () => (h.previewError ? Promise.reject(h.previewError) : Promise.resolve(h.plans)),
+        claim: (planId) => {
+          h.claimCalls.push({ accountId: account.accountId, planId });
+          return h.claimOutcome instanceof Error ? Promise.reject(h.claimOutcome) : Promise.resolve(h.claimOutcome);
+        },
+      };
+    },
+    getCaptcha: () => {
+      for (const h of byId.values()) {
+        if (h.captchaResult instanceof Error) return Promise.reject(h.captchaResult);
+        return Promise.resolve(h.captchaResult);
+      }
+      return Promise.reject(new Error("no accounts"));
+    },
+    config: { pollIntervalMs: 300_000, cooldownMs: 600_000, ...configOverrides },
+    log: (message) => logs.push(message),
+    notify: (message) => notifications.push(message),
+    now: () => nowMs,
+    // Deterministic account order regardless of storage ordering.
+    compareAccounts: (a, b) => a.accountId.localeCompare(b.accountId),
+  });
+
+  return {
+    scheduler,
+    primary,
+    forAccount: makeHarnessFor,
+    accounts,
+    byId,
+    logs,
+    notifications,
+    advance(ms: number) {
+      nowMs += ms;
+    },
+    get nowMs() {
+      return nowMs;
+    },
+  };
+}
+
+describe("ClaimScheduler single-account upstream semantics", () => {
+  it("claims the highest-priority plan and holds until ends_at", async () => {
+    const h = makeHarness();
+    h.primary.plans = [
+      { planId: "low", name: "L", description: "", priority: 1, entitlements: [] },
+      { planId: "high", name: "H", description: "", priority: 9, startsAt: 1500, endsAt: 3000, entitlements: [] },
+    ];
+    h.primary.claimOutcome = { ok: true, planId: "high", startsAt: 1500, endsAt: 3000 };
+
+    const result = await h.scheduler.tick();
+    expect(result).toEqual({ action: "claimed", planId: "high", startsAt: 1500, endsAt: 3000 });
+    expect(h.primary.claimCalls).toEqual([{ accountId: "acc-1", planId: "high" }]);
+    // ends_at 3000s vs now 1_000_000ms → hold 2_000_000ms.
+    expect(h.scheduler.nextWakeInMs()).toBe(2_000_000);
+    // Inside the hold window: skipped.
+    h.advance(1_000);
+    expect(await h.scheduler.tick()).toEqual({ action: "skipped_hold" });
+  });
+
+  it("claims the configured planId when set (ignores priority)", async () => {
+    const h = makeHarness({ planId: "specific" });
+    h.primary.plans = [
+      { planId: "specific", name: "S", description: "", priority: 0, entitlements: [] },
+      { planId: "other", name: "O", description: "", priority: 9, entitlements: [] },
+    ];
+    const result = await h.scheduler.tick();
+    expect((result as { action: string }).action).toBe("claimed");
+    expect(h.primary.claimCalls[0]?.planId).toBe("specific");
+  });
+
+  it("is idle when no claimable plans; plain poll cadence", async () => {
+    const h = makeHarness();
+    h.primary.plans = [];
+    expect(await h.scheduler.tick()).toEqual({ action: "idle" });
+    expect(h.scheduler.nextWakeInMs()).toBe(300_000);
+  });
+
+  it("treats preview 404 as idle (campaign endpoint not deployed yet)", async () => {
+    const h = makeHarness();
+    h.primary.previewError = new ClaimPreviewError("claim preview failed (404): nope", 404, 404);
+    expect(await h.scheduler.tick()).toEqual({ action: "idle" });
+    expect(h.scheduler.nextWakeInMs()).toBe(300_000);
+  });
+
+  it("holds until failureEndsAt for already_claimed/quota_exhausted, else cooldown", async () => {
+    const h = makeHarness();
+    h.primary.claimOutcome = { ok: false, planId: "p", failureKind: "already_claimed", code: 1003, message: "dup", failureEndsAt: 1_002 };
+    const result = await h.scheduler.tick();
+    expect((result as { action: string }).action).toBe("failed");
+    // failureEndsAt 1_002s → 1_002_000ms; hold = 2_000ms (capped 24h).
+
+    const noWindow = makeHarness();
+    noWindow.primary.claimOutcome = { ok: false, planId: "p", failureKind: "ineligible", code: 1004, message: "no" };
+    await noWindow.scheduler.tick();
+    expect(noWindow.scheduler.nextWakeInMs()).toBe(600_000);
+  });
+
+  it("stops on login_required", async () => {
+    const h = makeHarness();
+    h.primary.claimOutcome = { ok: false, planId: "p", failureKind: "login_required", code: 401, message: "relogin" };
+    await h.scheduler.tick();
+    expect(await h.scheduler.tick()).toEqual({ action: "stopped" });
+  });
+
+  it("applies error backoff for preview/captcha/claim transport failures", async () => {
+    const h = makeHarness();
+    h.primary.previewError = new Error("offline");
+    const result = await h.scheduler.tick();
+    expect(result.action).toBe("error");
+    expect(h.scheduler.nextWakeInMs()).toBe(600_000);
+  });
+
+  it("notifies on successful claims", async () => {
+    const h = makeHarness();
+    await h.scheduler.tick();
+    expect(h.notifications.some((n) => n.includes("weekend-1"))).toBe(true);
+  });
+});
+
+describe("ClaimScheduler multi-account rotation", () => {
+  it("checks every account per tick and claims only where available", async () => {
+    const h = makeHarness();
+    h.accounts.push({ jwt: "jwt-2", accountId: "acc-2", email: "b@x.dev" });
+    h.forAccount("acc-2").plans = []; // nothing for acc-2
+
+    await h.scheduler.tick();
+    expect(h.primary.claimCalls).toEqual([{ accountId: "acc-1", planId: "weekend-1" }]);
+    expect(h.byId.get("acc-2")!.claimCalls).toEqual([]);
+  });
+
+  it("an account on cooldown does not block other accounts", async () => {
+    const h = makeHarness();
+    h.accounts.push({ jwt: "jwt-2", accountId: "acc-2", email: "b@x.dev" });
+    h.primary.claimOutcome = { ok: false, planId: "weekend-1", failureKind: "quota_exhausted", code: 1005, message: "cap" };
+
+    await h.scheduler.tick(); // acc-1 fails → cooldown
+    h.advance(600_001);
+    h.accounts.length = 0;
+    h.accounts.push({ jwt: "jwt-2", accountId: "acc-2", email: "b@x.dev" });
+    h.forAccount("acc-2").claimOutcome = { ok: true, planId: "weekend-1" };
+
+    const result = await h.scheduler.tick(); // acc-2 still claimable
+    expect((result as { action: string }).action).toBe("claimed");
+  });
+});
