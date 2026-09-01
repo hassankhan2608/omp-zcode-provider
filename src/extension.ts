@@ -30,6 +30,7 @@ import { STARTPLAN_ANTHROPIC_BASE, ZCODE_APP_VERSION } from "./identity-context.
 import { zcodeUsageProvider } from "./usage.js";
 import { ClaimPreviewError, createClaimClient, selectClaimTarget, type ClaimablePlan } from "./claim.js";
 import { ClaimScheduler, type SchedulerAccount } from "./claim-scheduler.js";
+import { showClaimFireworks } from "./claim-fireworks.js";
 
 /** Poll/cooldown defaults mirror zcode-api's `claim` config (v4.5.3). */
 const CLAIM_POLL_MS = Number(process.env.ZCODE_CLAIM_POLL_MS || 300_000);
@@ -256,8 +257,10 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
           const captcha = await claimCaptcha(deps);
           const outcome = await client.claim(target.plan.planId, captcha);
           if (outcome.ok) {
-            ctx.ui.notify(`Claimed ${target.plan.name} for ${target.account.email ?? target.account.accountId}.`);
+            const message = `Claimed ${target.plan.name} for ${target.account.email ?? target.account.accountId}.`;
+            ctx.ui.notify(message);
             appendNotice(`claimed ${target.plan.planId} for ${target.account.email ?? target.account.accountId}`);
+            void showClaimFireworks(ctx, message);
           } else {
             ctx.ui.notify(`Claim failed: ${outcome.failureKind} (${outcome.code}) — ${outcome.message}`);
           }
@@ -276,7 +279,11 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
       getCaptcha: () => claimCaptcha(deps),
       config: { pollIntervalMs: CLAIM_POLL_MS, cooldownMs: CLAIM_COOLDOWN_MS },
       log: (message) => console.log(`[claim] ${message}`),
-      notify: appendNotice,
+      notify: (message: string) => {
+        appendNotice(message);
+        // Auto-claims happen unattended: celebrate briefly, then self-dismiss.
+        void showClaimFireworks(ctx, message, { autoCloseMs: 15_000 });
+      },
     });
     // Contained timer: throws are isolated and the timer dies with the session.
     ctx.setInterval(() => {
