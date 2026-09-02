@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import * as realSolver from "../src/captcha-solver.js";
 
 const solveMock = mock(async (_scene: string, _region: string, _prefix: string) => {
   return "x".repeat(64);
 });
 
+// `mock.module` replaces the module for the whole test process, so the stand-in
+// must keep every export the real module has - otherwise a later test file
+// importing `createCaptchaSolver` from it fails to resolve. Only the solve
+// entry point and its stats are faked here.
 mock.module("../src/captcha-solver.js", () => ({
+  ...realSolver,
   runCaptchaSolve: solveMock,
   shutdownCaptchaSolver: () => {},
   setCaptchaSolverConcurrency: () => {},

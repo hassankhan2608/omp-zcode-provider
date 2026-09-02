@@ -228,6 +228,10 @@ export async function dispatchStartPlanRequest(
   // (upstream 0b0a4e0 + 7dd6818). The request never reached upstream, so
   // resending is side-effect-free; a fresh Request per attempt keeps the body
   // stream usable. A client abort is never retried.
+  // Nothing below should start work for a turn the client already dropped: a
+  // solve costs seconds of CPU and burns a single-use token that the next real
+  // request would have used.
+  if (source.signal?.aborted) throw new Error("Client aborted before upstream connect.");
   const initialCaptcha = await acquireCaptcha(captcha, appVersion);
   let response: Response | undefined;
   for (let attempt = 1; ; attempt++) {
@@ -241,10 +245,24 @@ export async function dispatchStartPlanRequest(
       break;
     } catch (error) {
       if (attempt >= CONNECT_RETRY_ATTEMPTS) throw error;
+      // Abort-aware wait: an abort during the backoff resolves immediately, so
+      // a cancelled turn is not held open for the remaining delay. The listener
+      // is removed either way to keep long-lived signals leak-free.
       const backoffMs = CONNECT_RETRY_BACKOFF_MS * attempt;
       const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, backoffMs);
-      await promise;
+      const timer = setTimeout(resolve, backoffMs);
+      const onAbort = (): void => resolve();
+      // The signal may already be aborted here: the abort that killed this
+      // attempt often lands before we get to wait, and `addEventListener`
+      // never fires for an event that already happened.
+      if (source.signal?.aborted) resolve();
+      else source.signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        await promise;
+      } finally {
+        clearTimeout(timer);
+        source.signal?.removeEventListener("abort", onAbort);
+      }
     }
   }
   response = response!;

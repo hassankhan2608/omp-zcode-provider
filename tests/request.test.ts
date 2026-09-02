@@ -439,6 +439,52 @@ describe("gateway resilience (upstream v4.5.0)", () => {
     await expect(attempt).rejects.toThrow(/Unable to connect|aborted/);
     expect(calls).toBe(1);
   });
+
+  it("does not mint a captcha token for a request the client already aborted", async () => {
+    // Solving costs seconds of CPU and a single-use token. Starting one for a
+    // cancelled turn wastes both and can leave the pool empty for the next
+    // real request.
+    const controller = new AbortController();
+    controller.abort();
+    let solves = 0;
+    const captcha = captchaStub({
+      async getCaptchaToken() {
+        solves += 1;
+        return { verifyParam: "param-1", region: "sgp" };
+      },
+    });
+    const attempt = dispatchStartPlanRequest(
+      { accountId: ACCOUNT, jwt: JWT, fetchImpl: asFetch(async () => new Response("{}")), captcha },
+      "https://api.anthropic.com/v1/messages",
+      { method: "POST", body: messagesBody(), signal: controller.signal },
+    );
+    await expect(attempt).rejects.toThrow(/aborted/);
+    expect(solves).toBe(0);
+  });
+
+  it("stops waiting out the connect backoff as soon as the client aborts", async () => {
+    // Real-clock exception: the behaviour under test *is* the interaction with
+    // the 500ms backoff timer, and the implementation captures that timer
+    // internally, so there is no seam for fake timers. The abort happens
+    // synchronously inside the first attempt, so the assertion is "returned
+    // well before one backoff elapsed", not a guessed sleep.
+    const controller = new AbortController();
+    let calls = 0;
+    const fetchImpl = asFetch(async () => {
+      calls += 1;
+      controller.abort();
+      throw new Error("Unable to connect");
+    });
+    const startedAt = Date.now();
+    const attempt = dispatchStartPlanRequest(
+      { accountId: ACCOUNT, jwt: JWT, fetchImpl, captcha: captchaStub() },
+      "https://api.anthropic.com/v1/messages",
+      { method: "POST", body: messagesBody(), signal: controller.signal },
+    );
+    await expect(attempt).rejects.toThrow(/aborted|Unable to connect/);
+    expect(calls).toBe(1);
+    expect(Date.now() - startedAt).toBeLessThan(400);
+  });
 });
 
 
