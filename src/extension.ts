@@ -28,7 +28,7 @@ import { decodeJwtPayload } from "./credential.js";
 import { cachedStartPlanModels, FALLBACK_MODELS, resolveStartPlanModels } from "./models.js";
 import { STARTPLAN_ANTHROPIC_BASE, ZCODE_APP_VERSION } from "./identity-context.js";
 import { zcodeUsageProvider } from "./usage.js";
-import { ClaimPreviewError, createClaimClient, selectClaimTarget, type ClaimablePlan } from "./claim.js";
+import { ClaimPreviewError, createClaimClient, type ClaimablePlan } from "./claim.js";
 import { ClaimScheduler, type SchedulerAccount } from "./claim-scheduler.js";
 import { showClaimFireworks } from "./claim-fireworks.js";
 import { claimCelebration } from "./claim-summary.js";
@@ -201,11 +201,6 @@ async function claimCaptcha(deps: ExtensionDependencies): Promise<{ verifyParam:
   return captcha.getCaptchaToken(ZCODE_APP_VERSION);
 }
 
-function planLabel(plan: ClaimablePlan): string {
-  const entitlement = plan.entitlements[0];
-  const quota = entitlement ? `${(entitlement.grantUnits / 1_000_000).toFixed(0)}M ${entitlement.showName} (${entitlement.period})` : "";
-  return `${plan.name}${quota ? ` — ${quota}` : ""}`;
-}
 
 /**
  * Native `/claim` command plus opt-out auto-claim scheduler.
@@ -225,8 +220,8 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
   };
 
   pi.registerCommand("claim", {
-    description: "Claim available ZCode trial plans (preview, select, confirm)",
-    handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+    description: "Check every stored ZCode account and claim whatever is available now",
+    handler: async (_args: string, ctx: ExtensionCommandContext): Promise<void> => {
       const accounts = storedAccounts(ctx.modelRegistry);
       if (accounts.length === 0) {
         ctx.ui.notify("No stored ZCode accounts. Run /login zcode first.");
@@ -254,37 +249,10 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
         return;
       }
 
-      const choices = available.flatMap(({ account, plans }) =>
-        plans.map((plan) => ({ account, plan, label: `${account.email ?? account.accountId} — ${planLabel(plan)}` })),
-      );
-
-      // Print mode has no selection/confirmation UI: report availability only.
-      if (!ctx.hasUI) {
-        for (const choice of choices) {
-          const message = `Claimable: ${choice.label}`;
-          ctx.ui.notify(message);
-          appendNotice(message);
-        }
-        return;
-      }
-      const claimAll = args.trim().toLowerCase() === "all";
-      let targets = choices;
-      if (!claimAll) {
-        const allLabel =
-          choices.length > 1
-            ? `Claim all accounts (${choices.length} plans across ${available.length} accounts)`
-            : undefined;
-        const options = [
-          ...(allLabel ? [{ label: allLabel, description: "Claim every currently available plan" }] : []),
-          ...choices.map((choice) => ({ label: choice.label, description: choice.plan.description || undefined })),
-        ];
-        const selected = await ctx.ui.select("Claim ZCode plan", options);
-        if (!selected) return;
-        targets = selected === allLabel ? choices : choices.filter((choice) => choice.label === selected);
-      }
-
-      const summary = targets.map((target) => `${target.account.email ?? target.account.accountId}: ${planLabel(target.plan)}`).join("\n");
-      if (!(await ctx.ui.confirm("Claim ZCode plan(s)?", summary))) return;
+      // Manual trigger of the scheduler's behaviour: claim everything that is
+      // available right now. No selection or confirmation - the auto-claimer
+      // already claims unattended, so a manual run must not be harder to use.
+      const targets = available.flatMap(({ account, plans }) => plans.map((plan) => ({ account, plan })));
 
       for (const target of targets) {
         const client = createClaimClient({ account: target.account, fetchImpl: deps.fetchImpl });

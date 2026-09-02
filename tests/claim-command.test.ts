@@ -210,18 +210,7 @@ describe("/claim command", () => {
     expect(ui.notifications[0]).toContain("No claimable");
   });
 
-  it("selects, confirms, and claims the chosen plan", async () => {
-    handlers = [async () => jsonResponse(availableBody), async () => jsonResponse(claimedBody)];
-    const fake = build([activeRow(1, "a@x.dev", "u-1")], sequentialFetch());
-    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
-    await runCommand(fake, fakeCtx({ rows: [activeRow(1, "a@x.dev", "u-1")], ui }));
-
-    expect(ui.selections[0]!.labels[0]).toContain("ZCode Global Build");
-    expect(ui.confirmations).toHaveLength(1);
-    expect(ui.notifications.some((n) => n.toLowerCase().includes("claimed"))).toBe(true);
-  });
-
-  it("does not claim when confirmation is declined", async () => {
+  it("claims the available plan immediately, without selection or confirmation", async () => {
     let claimPosts = 0;
     handlers = [
       async () => jsonResponse(availableBody),
@@ -231,13 +220,41 @@ describe("/claim command", () => {
       },
     ];
     const fake = build([activeRow(1, "a@x.dev", "u-1")], sequentialFetch());
-    const ui: UiSpy = { notifications: [], selections: [], confirmations: [], confirmResult: false };
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
     await runCommand(fake, fakeCtx({ rows: [activeRow(1, "a@x.dev", "u-1")], ui }));
-    expect(ui.confirmations).toHaveLength(1);
-    expect(claimPosts).toBe(0);
+
+    expect(ui.selections).toHaveLength(0);
+    expect(ui.confirmations).toHaveLength(0);
+    expect(claimPosts).toBe(1);
+    expect(ui.notifications.some((n) => n.toLowerCase().includes("claimed"))).toBe(true);
   });
 
-  it("lists availability without claiming in print mode (hasUI=false)", async () => {
+  it("claims every account that has something available", async () => {
+    let claimPosts = 0;
+    handlers = [
+      async () => jsonResponse(availableBody),
+      async () => jsonResponse(availableBody),
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+    ];
+    const rows = [activeRow(1, "a@x.dev", "u-1"), activeRow(2, "b@x.dev", "u-2")];
+    const fake = build(rows, sequentialFetch());
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
+
+    await runCommand(fake, fakeCtx({ rows, ui }));
+
+    expect(ui.selections).toHaveLength(0);
+    expect(ui.confirmations).toHaveLength(0);
+    expect(claimPosts).toBe(2);
+  });
+
+  it("claims in print mode too, since the scheduler already claims unattended", async () => {
     let claimPosts = 0;
     handlers = [
       async () => jsonResponse(availableBody),
@@ -249,18 +266,19 @@ describe("/claim command", () => {
     const fake = build([activeRow(1, "a@x.dev", "u-1")], sequentialFetch());
     const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
     await runCommand(fake, fakeCtx({ rows: [activeRow(1, "a@x.dev", "u-1")], ui, hasUI: false }));
-    expect(ui.notifications.some((n) => n.includes("ZCode Global Build"))).toBe(true);
-    expect(claimPosts).toBe(0);
+
+    expect(claimPosts).toBe(1);
+    expect(ui.notifications.some((n) => n.toLowerCase().includes("claimed"))).toBe(true);
   });
 
-  it("claims every available plan with args=all after one confirmation", async () => {
+  it("surfaces a per-account claim failure without stopping the other accounts", async () => {
     let claimPosts = 0;
     handlers = [
       async () => jsonResponse(availableBody),
       async () => jsonResponse(availableBody),
       async () => {
         claimPosts += 1;
-        return jsonResponse(claimedBody);
+        return jsonResponse({ code: 1003, msg: "already claimed" });
       },
       async () => {
         claimPosts += 1;
@@ -270,40 +288,12 @@ describe("/claim command", () => {
     const rows = [activeRow(1, "a@x.dev", "u-1"), activeRow(2, "b@x.dev", "u-2")];
     const fake = build(rows, sequentialFetch());
     const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
-    await runCommand(fake, fakeCtx({ rows, ui }), "all");
-    expect(ui.selections).toHaveLength(0);
-    expect(ui.confirmations).toHaveLength(1);
-    expect(claimPosts).toBe(2);
-  });
-
-  it("offers and executes a Claim all accounts selector choice", async () => {
-    let claimPosts = 0;
-    handlers = [
-      async () => jsonResponse(availableBody),
-      async () => jsonResponse(availableBody),
-      async () => {
-        claimPosts += 1;
-        return jsonResponse(claimedBody);
-      },
-      async () => {
-        claimPosts += 1;
-        return jsonResponse(claimedBody);
-      },
-    ];
-    const rows = [activeRow(1, "a@x.dev", "u-1"), activeRow(2, "b@x.dev", "u-2")];
-    const fake = build(rows, sequentialFetch());
-    const ui: UiSpy = {
-      notifications: [],
-      selections: [],
-      confirmations: [],
-      selectResult: "Claim all accounts (2 plans across 2 accounts)",
-    };
 
     await runCommand(fake, fakeCtx({ rows, ui }));
 
-    expect(ui.selections[0]!.labels[0]).toBe("Claim all accounts (2 plans across 2 accounts)");
-    expect(ui.confirmations).toHaveLength(1);
     expect(claimPosts).toBe(2);
+    expect(ui.notifications.some((n) => n.includes("Claim failed"))).toBe(true);
+    expect(ui.notifications.some((n) => n.toLowerCase().includes("claimed"))).toBe(true);
   });
 });
 
