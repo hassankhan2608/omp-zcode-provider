@@ -31,7 +31,7 @@ import { zcodeUsageProvider } from "./usage.js";
 import { ClaimPreviewError, createClaimClient, type ClaimablePlan } from "./claim.js";
 import { ClaimScheduler, type SchedulerAccount } from "./claim-scheduler.js";
 import { showClaimFireworks } from "./claim-fireworks.js";
-import { claimCelebration } from "./claim-summary.js";
+import { claimCelebration, mergeCelebrations, type ClaimCelebration } from "./claim-summary.js";
 
 /** Poll/cooldown defaults mirror zcode-api's `claim` config (v4.5.3). */
 const CLAIM_POLL_MS = Number(process.env.ZCODE_CLAIM_POLL_MS || 300_000);
@@ -254,6 +254,10 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
       // already claims unattended, so a manual run must not be harder to use.
       const targets = available.flatMap(({ account, plans }) => plans.map((plan) => ({ account, plan })));
 
+      // Collected, not shown per account: the celebration is one widget with
+      // one key, so a card per account would overwrite the previous one and
+      // only the last account would ever be visible.
+      const celebrations: ClaimCelebration[] = [];
       for (const target of targets) {
         const client = createClaimClient({ account: target.account, fetchImpl: deps.fetchImpl });
         try {
@@ -267,7 +271,7 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
             });
             ctx.ui.notify(celebration.notice);
             appendNotice(celebration.notice);
-            void showClaimFireworks(ctx, celebration);
+            celebrations.push(celebration);
           } else {
             ctx.ui.notify(`Claim failed: ${outcome.failureKind} (${outcome.code}) — ${outcome.message}`);
           }
@@ -275,6 +279,9 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
           ctx.ui.notify(`Claim failed: ${(error as Error).message}`);
         }
       }
+
+      const combined = mergeCelebrations(celebrations);
+      if (combined) void showClaimFireworks(ctx, combined);
     },
   });
 
@@ -287,6 +294,9 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
       config: { pollIntervalMs: CLAIM_POLL_MS, cooldownMs: CLAIM_COOLDOWN_MS },
       log: (message) => console.log(`[claim] ${message}`),
       notify: appendNotice,
+      // Buffered for the duration of one tick, then shown as one card - see
+      // mergeCelebrations(): a tick can claim for several accounts, and the
+      // celebration widget has a single key.
       onClaimed: (account, plan, outcome) => {
         const celebration = claimCelebration({
           plan,
@@ -295,8 +305,7 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
         });
         ctx.ui.notify(celebration.notice);
         appendNotice(celebration.notice);
-        // Non-modal widget: auto-claim celebrates without taking editor focus.
-        void showClaimFireworks(ctx, celebration);
+        tickClaims.push(celebration);
       },
     });
     // Single-flight: one tick previews and possibly claims for every stored
@@ -305,11 +314,18 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
     // late tick is dropped rather than queued - the next interval is only
     // minutes away and the plan list is re-read every time anyway.
     let running = false;
+    let tickClaims: ClaimCelebration[] = [];
     const runTick = (): void => {
       if (running) return;
       running = true;
+      tickClaims = [];
       void scheduler
         .tick()
+        .then(() => {
+          const combined = mergeCelebrations(tickClaims);
+          // Non-modal widget: auto-claim celebrates without taking focus.
+          if (combined) void showClaimFireworks(ctx, combined);
+        })
         .catch((error: unknown) => {
           console.error(`[claim] scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
         })

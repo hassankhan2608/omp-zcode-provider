@@ -295,6 +295,47 @@ describe("/claim command", () => {
     expect(ui.notifications.some((n) => n.includes("Claim failed"))).toBe(true);
     expect(ui.notifications.some((n) => n.toLowerCase().includes("claimed"))).toBe(true);
   });
+
+  it("shows one combined celebration when several accounts claim in one run", async () => {
+    handlers = [
+      async () => jsonResponse(availableBody),
+      async () => jsonResponse(availableBody),
+      async () => jsonResponse(claimedBody),
+      async () => jsonResponse(claimedBody),
+    ];
+    const rows = [activeRow(1, "a@x.dev", "u-1"), activeRow(2, "b@x.dev", "u-2")];
+    const fake = build(rows, sequentialFetch());
+    const ui: UiSpy = { notifications: [], selections: [], confirmations: [] };
+    const widgets: string[][] = [];
+
+    await runCommand(fake, {
+      ...(fakeCtx({ rows, ui }) as Record<string, unknown>),
+      mode: "tui",
+      hasUI: true,
+      setInterval: () => 0 as unknown as NodeJS.Timeout,
+      setTimeout: () => 0 as unknown as NodeJS.Timeout,
+      clearTimer: () => {},
+      ui: {
+        ...ui,
+        notify: (message: string) => ui.notifications.push(message),
+        setWidget: (_key: string, content: unknown) => {
+          if (typeof content !== "function") return;
+          const component = content({ requestRender() {} }, {});
+          if (component && typeof component === "object" && "render" in component && typeof component.render === "function") {
+            widgets.push([...component.render(80)].map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, "")));
+          }
+        },
+      },
+    });
+
+    // Exactly one card, carrying both accounts - a per-account card would
+    // overwrite the earlier one under the shared widget key.
+    expect(widgets).toHaveLength(1);
+    const text = widgets[0]!.join("\n");
+    expect(text).toContain("2 PLANS CLAIMED");
+    expect(text).toContain("a@x.dev");
+    expect(text).toContain("b@x.dev");
+  });
 });
 
 describe("auto-claim scheduler wiring", () => {
@@ -394,10 +435,14 @@ describe("auto-claim scheduler wiring", () => {
       mode: "tui",
       hasUI: true,
       modelRegistry: { authStorage: authStorageWith([row]) },
-      setInterval: (_callback: () => void, ms: number) => {
-        intervals.push(ms);
+      // The scheduler's poll cadence; the celebration also uses ctx timers, so
+      // both interval kinds land here and only the cadence is asserted.
+      setInterval: (_callback: () => void, ms?: number) => {
+        if (ms !== undefined) intervals.push(ms);
         return 0 as unknown as NodeJS.Timeout;
       },
+      setTimeout: () => 0 as unknown as NodeJS.Timeout,
+      clearTimer: () => {},
       ui: {
         notify: () => {},
         setWidget: (_key: string, content: unknown) => {
@@ -416,7 +461,9 @@ describe("auto-claim scheduler wiring", () => {
     await widgetShown.promise;
 
     expect(claimPosts).toBe(1);
-    expect(intervals).toEqual([300_000]);
+    // The celebration animates on its own ctx interval, so assert the claim
+    // cadence is present rather than that it is the only interval.
+    expect(intervals).toContain(300_000);
     const plain = rendered.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     expect(plain).toContain("100,000,000 TOKENS");
     expect(plain).toContain("GLM-5.3-Flash · 100M tokens · one-time");

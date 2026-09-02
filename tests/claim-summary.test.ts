@@ -3,7 +3,7 @@
  * on the ZCode desktop success card (grant total, entitlement, validity).
  */
 import { describe, expect, it } from "bun:test";
-import { claimCelebration } from "../src/claim-summary.js";
+import { claimCelebration, mergeCelebrations } from "../src/claim-summary.js";
 import type { ClaimablePlan, ClaimOutcome } from "../src/claim.js";
 
 const PLAN: ClaimablePlan = {
@@ -115,5 +115,51 @@ describe("claimCelebration", () => {
     expect(notice).toContain("100M tokens");
     expect(notice).toContain("a@b.dev");
     expect(notice.split("\n")).toHaveLength(1);
+  });
+});
+
+describe("mergeCelebrations", () => {
+  const card = (account: string, headline = "100,000,000 TOKENS") => ({
+    headline,
+    lines: ["ZCode Global Build", "GLM-5.3-Flash · 100M tokens · one-time", account],
+    notice: `Claimed ZCode Global Build — 100M tokens for ${account}`,
+  });
+
+  it("returns a single card unchanged", () => {
+    const only = card("a@b.dev");
+    expect(mergeCelebrations([only])).toEqual(only);
+  });
+
+  it("counts the plans in the headline when several accounts claim in one pass", () => {
+    // One widget key means a per-account celebration would overwrite the
+    // previous one and only the last account would ever be visible.
+    const merged = mergeCelebrations([card("a@b.dev"), card("b@b.dev")])!;
+    expect(merged.headline).toBe("2 PLANS CLAIMED");
+  });
+
+  it("keeps every account's detail lines, in order, separated by blanks", () => {
+    const merged = mergeCelebrations([card("a@b.dev"), card("b@b.dev")])!;
+    expect(merged.lines).toEqual([
+      "100,000,000 TOKENS",
+      "ZCode Global Build",
+      "GLM-5.3-Flash · 100M tokens · one-time",
+      "a@b.dev",
+      "",
+      "100,000,000 TOKENS",
+      "ZCode Global Build",
+      "GLM-5.3-Flash · 100M tokens · one-time",
+      "b@b.dev",
+    ]);
+  });
+
+  it("joins the one-line notices so the transcript records each claim", () => {
+    const merged = mergeCelebrations([card("a@b.dev"), card("b@b.dev")])!;
+    expect(merged.notice.split("; ")).toHaveLength(2);
+    expect(merged.notice).toContain("a@b.dev");
+    expect(merged.notice).toContain("b@b.dev");
+  });
+
+  it("returns undefined for an empty pass, so nothing is shown", () => {
+    expect(mergeCelebrations([])).toBeUndefined();
   });
 });

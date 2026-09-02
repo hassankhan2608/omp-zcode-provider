@@ -77,3 +77,33 @@ export function claimCelebration(input: ClaimCelebrationInput): ClaimCelebration
   const quota = entitlements[0] ? ` — ${shortUnits(total)} ${unitLabel(entitlements[0])}` : "";
   return { headline, lines, notice: `Claimed ${plan.name}${quota} for ${account}` };
 }
+
+/**
+ * Combine the claims of one pass into a single card.
+ *
+ * A scheduler tick (or one `/claim`) can claim for several accounts. The
+ * celebration is a single widget with a single key, so showing one card per
+ * account would overwrite the previous card and only the last account would
+ * ever be visible. Merging keeps each account's detail lines and reports the
+ * count in the headline.
+ *
+ * Returns `undefined` for an empty pass so callers can skip the widget instead
+ * of rendering an empty celebration.
+ */
+export function mergeCelebrations(cards: ClaimCelebration[]): ClaimCelebration | undefined {
+  if (cards.length === 0) return undefined;
+  const only = cards[0];
+  if (cards.length === 1 && only) return only;
+
+  const lines: string[] = [];
+  for (const card of cards) {
+    if (lines.length > 0) lines.push("");
+    lines.push(card.headline, ...card.lines);
+  }
+
+  return {
+    headline: `${cards.length} PLANS CLAIMED`,
+    lines,
+    notice: cards.map((card) => card.notice).join("; "),
+  };
+}

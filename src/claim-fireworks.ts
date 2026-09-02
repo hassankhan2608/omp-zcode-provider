@@ -34,6 +34,13 @@ type FireworksWidgetContent =
   | string[]
   | ((tui: ClaimFireworksTui, theme: unknown) => FireworksComponent)
   | undefined;
+/**
+ * Minimal host surface: the slice of OMP's `ExtensionContext` we consume.
+ *
+ * The timers come from the context rather than globals on purpose - OMP clears
+ * context timers on `session_shutdown`, so a celebration can never fire a
+ * callback into a session that no longer exists.
+ */
 export interface ClaimFireworksHost {
   mode: string;
   hasUI: boolean;
@@ -44,7 +51,17 @@ export interface ClaimFireworksHost {
       options?: { placement?: "aboveEditor" | "belowEditor" },
     ): void;
   };
+  setTimeout(callback: () => void, ms?: number): FireworksTimer;
+  setInterval(callback: () => void, ms?: number): FireworksTimer;
+  clearTimer(timer: FireworksTimer): void;
 }
+
+/**
+ * Opaque handle returned by OMP's context timers. Deliberately `unknown`: we
+ * only ever hand it back to `clearTimer`, and typing it as OMP's internal
+ * `Timer` would couple this module to a type it never inspects.
+ */
+export type FireworksTimer = unknown;
 
 export interface ShowClaimFireworksOptions {
   /** Real lifetime of the non-modal widget. */
@@ -81,16 +98,16 @@ export async function showClaimFireworks(
   activeCelebrations.get(host)?.finish();
 
   const { promise, resolve } = Promise.withResolvers<void>();
-  let pump: NodeJS.Timeout | undefined;
-  let timeout: NodeJS.Timeout | undefined;
+  let pump: FireworksTimer | undefined;
+  let timeout: FireworksTimer | undefined;
   let finished = false;
 
   const state: ActiveCelebration = {
     finish(): void {
       if (finished) return;
       finished = true;
-      clearInterval(pump);
-      clearTimeout(timeout);
+      if (pump !== undefined) host.clearTimer(pump);
+      if (timeout !== undefined) host.clearTimer(timeout);
       if (activeCelebrations.get(host) === state) {
         activeCelebrations.delete(host);
         host.ui.setWidget(FIREWORKS_WIDGET_KEY, undefined);
@@ -104,15 +121,13 @@ export async function showClaimFireworks(
     FIREWORKS_WIDGET_KEY,
     (tui) => {
       const component = createFireworksComponent(card);
-      pump = setInterval(() => tui.requestRender(), 1000 / FPS);
-      pump.unref?.();
+      pump = host.setInterval(() => tui.requestRender(), 1000 / FPS);
       return component;
     },
     { placement: "aboveEditor" },
   );
 
-  timeout = setTimeout(state.finish, options.durationMs ?? DEFAULT_DURATION_MS);
-  timeout.unref?.();
+  timeout = host.setTimeout(state.finish, options.durationMs ?? DEFAULT_DURATION_MS);
   await promise;
 }
 
