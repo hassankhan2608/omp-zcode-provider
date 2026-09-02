@@ -255,15 +255,25 @@ export class CaptchaTokenPool {
       // grind through its retry budget (~30-45s) — cap the client-facing wait
       // and let the background waves finish the job instead.
       const raceDeadlineMs = Number(process.env.CAPTCHA_SOLVE_RACE_DEADLINE_MS || 25_000);
-      param = await Promise.race([
-        this.solveRaced(cfg),
-        new Promise<never>((_, rej) =>
-          setTimeout(
-            () => rej(new Error(`captcha take deadline (${raceDeadlineMs}ms)`)),
-            Math.max(1_000, raceDeadlineMs),
-          ),
-        ),
-      ]);
+      // OMP-ONLY: keep a handle so the loser is cleared, and unref it. OMP also
+      // runs as `omp -p`, which exits when its work is done, so a 25s timer
+      // left pending after a 2ms take delayed process exit by 25s. Upstream is
+      // a long-lived proxy and never observes this. See upstream-parity.ts.
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      try {
+        param = await Promise.race([
+          this.solveRaced(cfg),
+          new Promise<never>((_, rej) => {
+            deadlineTimer = setTimeout(
+              () => rej(new Error(`captcha take deadline (${raceDeadlineMs}ms)`)),
+              Math.max(1_000, raceDeadlineMs),
+            );
+            deadlineTimer.unref?.();
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
     } catch (err) {
       // Mints fail in clusters (pe-stall storms, F008 velocity). Background
       // refill waves keep retrying — give them a short window to land a

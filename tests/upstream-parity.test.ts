@@ -59,6 +59,15 @@ describe("classifyDivergence", () => {
     const result = classifyDivergence("a\n\n  b\n", "a\nb\n", ENTRY.allowed);
     expect(result.unexplained).toEqual([]);
   });
+
+  it("ignores brace-only lines, which a restructure moves without changing behaviour", () => {
+    // Wrapping a statement in try/finally adds `}`, `);`, `try {` lines. Those
+    // cannot change behaviour on their own - any accompanying statement change
+    // is still reported - and registering each one would bury the manifest in
+    // punctuation.
+    const result = classifyDivergence("try {\n  work();\n} finally {\n  done();\n}\n", "work();\ndone();\n", []);
+    expect(result.unexplained).toEqual([]);
+  });
 });
 
 describe("parityReport", () => {

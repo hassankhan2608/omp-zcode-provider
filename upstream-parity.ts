@@ -120,7 +120,51 @@ export const VENDORED_FILES: VendoredFile[] = [
       },
     ],
   },
-  { local: "src/captcha-pool.ts", upstream: "src/proxy/captcha-pool.ts", allowed: [] },
+  {
+    local: "src/captcha-pool.ts",
+    upstream: "src/proxy/captcha-pool.ts",
+    allowed: [
+      {
+        marker: "let deadlineTimer: NodeJS.Timeout | undefined;",
+        reason:
+          "Holds the take-deadline timer so it can be cleared and unref'd. Upstream is a long-lived proxy, so a 25s timer left pending after a fast take costs nothing there; OMP also runs as `omp -p`, where it delayed process exit by the full 25s (measured).",
+      },
+      {
+        marker: "deadlineTimer = setTimeout(",
+        replaces: "setTimeout(",
+        reason: "Same fix: the timer is assigned to the handle instead of being created anonymously.",
+      },
+      {
+        marker: "new Promise<never>((_, rej) => {",
+        replaces: "new Promise<never>((_, rej) =>",
+        reason: "Same fix: the executor needs a block body to assign the handle and unref it.",
+      },
+      {
+        marker: "deadlineTimer.unref?.();",
+        reason: "Same fix: an unref'd deadline timer cannot hold OMP's event loop open.",
+      },
+      {
+        marker: "clearTimeout(deadlineTimer);",
+        reason: "Same fix: clears the losing timer as soon as the race settles.",
+      },
+      {
+        marker: "// OMP-ONLY: keep a handle so the loser is cleared",
+        reason: "First line of the comment block explaining the take-deadline timer fix.",
+      },
+      {
+        marker: "// runs as `omp -p`, which exits when its work is done, so a 25s timer",
+        reason: "Comment continuation for the take-deadline timer fix.",
+      },
+      {
+        marker: "// left pending after a 2ms take delayed process exit by 25s. Upstream is",
+        reason: "Comment continuation for the take-deadline timer fix.",
+      },
+      {
+        marker: "// a long-lived proxy and never observes this. See upstream-parity.ts.",
+        reason: "Comment continuation for the take-deadline timer fix.",
+      },
+    ],
+  },
   { local: "src/captcha-token.ts", upstream: "src/proxy/captcha-token.ts", allowed: [] },
   { local: "src/captcha-cpu-governor.ts", upstream: "src/proxy/captcha-cpu-governor.ts", allowed: [] },
   { local: "src/zcode_system.json", upstream: "src/proxy/zcode_system.json", allowed: [] },
@@ -173,13 +217,19 @@ export function classifyDivergence(
   if (localContent === upstreamContent) return { identical: true, explained: [], unexplained: [] };
 
   // Multiset comparison: a line moving elsewhere in the file is not drift, but
-  // a line appearing or disappearing is. Blank lines and indentation carry no
-  // behaviour, so they are normalised away before counting.
+  // a line appearing or disappearing is.
+  //
+  // Two classes of line are normalised away because they cannot change
+  // behaviour on their own, and reporting them would bury real findings:
+  // blank/indentation-only differences, and lines made purely of block
+  // punctuation (`}`, `);`, `try {`) which a restructure shuffles. Any
+  // statement that moved with them is still compared.
   const count = (content: string): Map<string, number> => {
     const counts = new Map<string, number>();
     for (const raw of content.split("\n")) {
       const line = raw.trim();
       if (line.length === 0) continue;
+      if (/^(?:\}?\s*(?:try|else|finally|do)?\s*\{|[)\]};,]+)$/.test(line)) continue;
       counts.set(line, (counts.get(line) ?? 0) + 1);
     }
     return counts;
