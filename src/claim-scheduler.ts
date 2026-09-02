@@ -49,6 +49,8 @@ export interface ClaimSchedulerDeps {
   log?: (message: string) => void;
   /** User-facing notification for consequential results (claims, stops). */
   notify?: (message: string) => void;
+  /** Structured success hook for rich native UI; fires once per claimed plan. */
+  onClaimed?: (account: SchedulerAccount, plan: ClaimablePlan, outcome: Extract<ClaimOutcome, { ok: true }>) => void;
   now?: () => number;
   /** Stable account ordering for tests; default keeps storage order. */
   compareAccounts?(a: SchedulerAccount, b: SchedulerAccount): number;
@@ -189,6 +191,7 @@ export class ClaimScheduler {
       }`;
       this.log(message);
       this.notify(message);
+      this.deps.onClaimed?.(account, target, outcome);
       return { action: "claimed", planId: target.planId, startsAt: outcome.startsAt, endsAt: outcome.endsAt };
     }
 

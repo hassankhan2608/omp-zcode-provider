@@ -275,6 +275,36 @@ describe("/claim command", () => {
     expect(ui.confirmations).toHaveLength(1);
     expect(claimPosts).toBe(2);
   });
+
+  it("offers and executes a Claim all accounts selector choice", async () => {
+    let claimPosts = 0;
+    handlers = [
+      async () => jsonResponse(availableBody),
+      async () => jsonResponse(availableBody),
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+      async () => {
+        claimPosts += 1;
+        return jsonResponse(claimedBody);
+      },
+    ];
+    const rows = [activeRow(1, "a@x.dev", "u-1"), activeRow(2, "b@x.dev", "u-2")];
+    const fake = build(rows, sequentialFetch());
+    const ui: UiSpy = {
+      notifications: [],
+      selections: [],
+      confirmations: [],
+      selectResult: "Claim all accounts (2 plans across 2 accounts)",
+    };
+
+    await runCommand(fake, fakeCtx({ rows, ui }));
+
+    expect(ui.selections[0]!.labels[0]).toBe("Claim all accounts (2 plans across 2 accounts)");
+    expect(ui.confirmations).toHaveLength(1);
+    expect(claimPosts).toBe(2);
+  });
 });
 
 describe("auto-claim scheduler wiring", () => {
@@ -309,5 +339,53 @@ describe("auto-claim scheduler wiring", () => {
     } finally {
       delete process.env.ZCODE_CLAIM_AUTO;
     }
+  });
+
+  it("immediately auto-claims on session start and shows the rich fireworks card", async () => {
+    let claimPosts = 0;
+    const claimSeen = Promise.withResolvers<void>();
+    const widgetShown = Promise.withResolvers<void>();
+    handlers = [
+      async () => jsonResponse(availableBody),
+      async () => {
+        claimPosts += 1;
+        claimSeen.resolve();
+        return jsonResponse(claimedBody);
+      },
+    ];
+    const row = activeRow(1, "a@x.dev", "u-1");
+    const fake = build([row], sequentialFetch());
+    const intervals: number[] = [];
+    const rendered: string[] = [];
+    const ctx = {
+      mode: "tui",
+      hasUI: true,
+      modelRegistry: { authStorage: authStorageWith([row]) },
+      setInterval: (_callback: () => void, ms: number) => {
+        intervals.push(ms);
+        return 0 as unknown as NodeJS.Timeout;
+      },
+      ui: {
+        notify: () => {},
+        setWidget: (_key: string, content: unknown) => {
+          if (typeof content !== "function") return;
+          const component = content({ requestRender() {} }, {});
+          if (component && typeof component === "object" && "render" in component && typeof component.render === "function") {
+            rendered.push(...component.render(80));
+          }
+          widgetShown.resolve();
+        },
+      },
+    };
+
+    for (const handler of fake.sessionStartHandlers) void handler({}, ctx);
+    await claimSeen.promise;
+    await widgetShown.promise;
+
+    expect(claimPosts).toBe(1);
+    expect(intervals).toEqual([300_000]);
+    const plain = rendered.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(plain).toContain("100,000,000 TOKENS");
+    expect(plain).toContain("GLM-5.3-Flash · 100M tokens · one-time");
   });
 });

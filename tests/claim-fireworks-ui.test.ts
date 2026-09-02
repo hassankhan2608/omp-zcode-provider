@@ -1,52 +1,85 @@
 /**
- * Fireworks presentation tests: the TUI bridge between claim success and the
- * animated overlay. Fake ui.custom captures the factory; a fake TUI records
- * render pumps; Escape resolves; the env kill-switch and mode guard skip it.
+ * Fireworks presentation tests.
+ *
+ * The celebration is an editor widget, never `ui.custom`: a widget takes no
+ * keyboard focus, so the editor keeps receiving input (including Ctrl-C)
+ * while it animates, and a real timer removes it.
  */
 import { afterEach, describe, expect, it } from "bun:test";
-import { showClaimFireworks, type ClaimFireworksHost } from "../src/claim-fireworks.js";
+import {
+  showClaimFireworks,
+  type ClaimFireworksHost,
+  type ClaimFireworksMessage,
+  type ClaimFireworksTui,
+  type FireworksComponent,
+} from "../src/claim-fireworks.js";
 
-interface Captured {
-  factories: Array<(tui: unknown, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => unknown>;
-  done?: (result?: unknown) => void;
-  rendered: string[][];
-  pumps: number;
-  finished: number;
+const MESSAGE: ClaimFireworksMessage = {
+  headline: "100,000,000 TOKENS",
+  lines: ["ZCode Global Build", "GLM-5.3-Flash · 100M tokens · one-time", "Valid until Sep 3, 2026, 7:30 AM", "a@b.dev"],
+};
+
+interface WidgetCall {
+  key: string;
+  cleared: boolean;
+  placement?: string;
+  rendered: string[];
 }
 
-function fakeHost(options: { mode?: string; fireworksEnv?: string } = {}): { host: ClaimFireworksHost; captured: Captured } {
-  const captured: Captured = { factories: [], rendered: [], pumps: 0, finished: 0 };
+interface Captured {
+  calls: WidgetCall[];
+  pumps: number;
+  customCalls: number;
+}
+
+type WidgetContent =
+  | readonly string[]
+  | ((tui: ClaimFireworksTui, theme: unknown) => FireworksComponent)
+  | undefined;
+
+/** Includes `custom` only to prove the presenter never calls it. */
+interface FakeUi {
+  setWidget(
+    key: string,
+    content: WidgetContent,
+    options?: { placement?: "aboveEditor" | "belowEditor" },
+  ): void;
+  custom(): void;
+}
+
+function fakeHost(options: { mode?: string; fireworksEnv?: string } = {}): {
+  host: ClaimFireworksHost;
+  captured: Captured;
+} {
+  const captured: Captured = { calls: [], pumps: 0, customCalls: 0 };
   if (options.fireworksEnv !== undefined) process.env.ZCODE_CLAIM_FIREWORKS = options.fireworksEnv;
   else delete process.env.ZCODE_CLAIM_FIREWORKS;
 
-  const host: ClaimFireworksHost = {
-    mode: options.mode ?? "tui",
-    hasUI: true,
-    ui: {
-      custom<T>(factory: (tui: { requestRender(): void }, theme: unknown, keybindings: unknown, done: (result?: T) => void) => unknown): Promise<T> {
-        captured.factories.push(factory as Captured["factories"][number]);
-        return new Promise<T>((resolve) => {
-          const done = (result?: T): void => {
-            captured.finished += 1;
-            resolve(result as T);
-          };
-          const tui = { requestRender: (): void => void (captured.pumps += 1) };
-          const component = factory(tui, {}, {}, done) as {
-            render(width: number): readonly string[];
-            handleInput?(data: string): void;
-          };
-          // Pump a few frames like the TUI would after requestRender, then
-          // dismiss with Escape so the overlay promise settles.
-          for (let frame = 0; frame < 3; frame++) {
-            component.render(80).forEach((line) => captured.rendered.push([...line]));
-            component.handleInput?.("");
-          }
-          component.handleInput?.("\x1b");
-        });
-      },
+  const ui: FakeUi = {
+    setWidget(key, content, widgetOptions): void {
+      if (content === undefined) {
+        captured.calls.push({ key, cleared: true, rendered: [] });
+        return;
+      }
+      const tui: ClaimFireworksTui = {
+        requestRender(): void {
+          captured.pumps += 1;
+        },
+      };
+      const component = typeof content === "function" ? content(tui, {}) : { render: () => content };
+      captured.calls.push({
+        key,
+        cleared: false,
+        ...(widgetOptions?.placement !== undefined ? { placement: widgetOptions.placement } : {}),
+        rendered: [...component.render(80)],
+      });
+    },
+    custom(): void {
+      captured.customCalls += 1;
     },
   };
-  return { host, captured };
+
+  return { host: { mode: options.mode ?? "tui", hasUI: true, ui }, captured };
 }
 
 afterEach(() => {
@@ -54,24 +87,47 @@ afterEach(() => {
 });
 
 describe("showClaimFireworks", () => {
-  it("presents the overlay and resolves on Escape", async () => {
+  it("shows a centered widget above the editor and removes it after the real timer", async () => {
     const { host, captured } = fakeHost();
-    await showClaimFireworks(host, "ZCode claim: test");
-    expect(captured.factories).toHaveLength(1);
-    expect(captured.finished).toBe(1);
-    expect(captured.rendered.length).toBeGreaterThan(0);
+    await showClaimFireworks(host, MESSAGE, { durationMs: 30 });
+
+    expect(captured.calls[0]!.cleared).toBe(false);
+    expect(captured.calls[0]!.placement).toBe("aboveEditor");
+    expect(captured.calls[0]!.rendered.join("\n")).toContain("100,000,000 TOKENS");
+    const last = captured.calls[captured.calls.length - 1]!;
+    expect(last.cleared).toBe(true);
+    expect(last.key).toBe(captured.calls[0]!.key);
   });
 
-  it("skips the overlay when ZCODE_CLAIM_FIREWORKS=0", async () => {
+  it("survives a stale string payload from a scheduler created before hot reload", async () => {
+    const { host, captured } = fakeHost();
+    const stalePayload = "ZCode claim: ZCode Global Build claimed for a@b.dev";
+    await showClaimFireworks(host, stalePayload, { durationMs: 10 });
+    expect(captured.calls[0]!.rendered.join("\n")).toContain(stalePayload);
+    expect(captured.calls[captured.calls.length - 1]!.cleared).toBe(true);
+  });
+
+  it("never calls the focus-stealing custom UI", async () => {
+    const { host, captured } = fakeHost();
+    await showClaimFireworks(host, MESSAGE, { durationMs: 10 });
+    expect(captured.customCalls).toBe(0);
+  });
+
+  it("animates by asking the host to re-render while visible", async () => {
+    const { host, captured } = fakeHost();
+    await showClaimFireworks(host, MESSAGE, { durationMs: 200 });
+    expect(captured.pumps).toBeGreaterThan(0);
+  });
+
+  it("skips the celebration when ZCODE_CLAIM_FIREWORKS=0", async () => {
     const { host, captured } = fakeHost({ fireworksEnv: "0" });
-    await showClaimFireworks(host, "ZCode claim: test");
-    expect(captured.factories).toHaveLength(0);
-    expect(captured.finished).toBe(0);
+    await showClaimFireworks(host, MESSAGE, { durationMs: 10 });
+    expect(captured.calls).toHaveLength(0);
   });
 
-  it("skips the overlay outside the TUI", async () => {
+  it("skips the celebration outside the TUI", async () => {
     const { host, captured } = fakeHost({ mode: "print" });
-    await showClaimFireworks(host, "ZCode claim: test");
-    expect(captured.factories).toHaveLength(0);
+    await showClaimFireworks(host, MESSAGE, { durationMs: 10 });
+    expect(captured.calls).toHaveLength(0);
   });
 });

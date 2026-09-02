@@ -31,6 +31,7 @@ import { zcodeUsageProvider } from "./usage.js";
 import { ClaimPreviewError, createClaimClient, selectClaimTarget, type ClaimablePlan } from "./claim.js";
 import { ClaimScheduler, type SchedulerAccount } from "./claim-scheduler.js";
 import { showClaimFireworks } from "./claim-fireworks.js";
+import { claimCelebration } from "./claim-summary.js";
 
 /** Poll/cooldown defaults mirror zcode-api's `claim` config (v4.5.3). */
 const CLAIM_POLL_MS = Number(process.env.ZCODE_CLAIM_POLL_MS || 300_000);
@@ -266,16 +267,20 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
         }
         return;
       }
-
       const claimAll = args.trim().toLowerCase() === "all";
       let targets = choices;
       if (!claimAll) {
-        const selected = await ctx.ui.select(
-          "Claim ZCode plan",
-          choices.map((choice) => ({ label: choice.label, description: choice.plan.description || undefined })),
-        );
+        const allLabel =
+          choices.length > 1
+            ? `Claim all accounts (${choices.length} plans across ${available.length} accounts)`
+            : undefined;
+        const options = [
+          ...(allLabel ? [{ label: allLabel, description: "Claim every currently available plan" }] : []),
+          ...choices.map((choice) => ({ label: choice.label, description: choice.plan.description || undefined })),
+        ];
+        const selected = await ctx.ui.select("Claim ZCode plan", options);
         if (!selected) return;
-        targets = choices.filter((choice) => choice.label === selected);
+        targets = selected === allLabel ? choices : choices.filter((choice) => choice.label === selected);
       }
 
       const summary = targets.map((target) => `${target.account.email ?? target.account.accountId}: ${planLabel(target.plan)}`).join("\n");
@@ -287,10 +292,14 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
           const captcha = await claimCaptcha(deps);
           const outcome = await client.claim(target.plan.planId, captcha);
           if (outcome.ok) {
-            const message = `Claimed ${target.plan.name} for ${target.account.email ?? target.account.accountId}.`;
-            ctx.ui.notify(message);
-            appendNotice(`claimed ${target.plan.planId} for ${target.account.email ?? target.account.accountId}`);
-            void showClaimFireworks(ctx, message);
+            const celebration = claimCelebration({
+              plan: target.plan,
+              outcome,
+              account: target.account.email ?? target.account.accountId,
+            });
+            ctx.ui.notify(celebration.notice);
+            appendNotice(celebration.notice);
+            void showClaimFireworks(ctx, celebration);
           } else {
             ctx.ui.notify(`Claim failed: ${outcome.failureKind} (${outcome.code}) — ${outcome.message}`);
           }
@@ -309,16 +318,28 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
       getCaptcha: () => claimCaptcha(deps),
       config: { pollIntervalMs: CLAIM_POLL_MS, cooldownMs: CLAIM_COOLDOWN_MS },
       log: (message) => console.log(`[claim] ${message}`),
-      notify: (message: string) => {
-        appendNotice(message);
-        // Auto-claims happen unattended: celebrate briefly, then self-dismiss.
-        void showClaimFireworks(ctx, message, { autoCloseMs: 15_000 });
+      notify: appendNotice,
+      onClaimed: (account, plan, outcome) => {
+        const celebration = claimCelebration({
+          plan,
+          outcome,
+          account: account.email ?? account.accountId,
+        });
+        ctx.ui.notify(celebration.notice);
+        appendNotice(celebration.notice);
+        // Non-modal widget: auto-claim celebrates without taking editor focus.
+        void showClaimFireworks(ctx, celebration);
       },
     });
-    // Contained timer: throws are isolated and the timer dies with the session.
-    ctx.setInterval(() => {
-      void scheduler.tick();
-    }, CLAIM_POLL_MS);
+    const runTick = (): void => {
+      void scheduler.tick().catch((error: unknown) => {
+        console.error(`[claim] scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    };
+    // Check now, then keep the five-minute poll cadence. A user should not
+    // need to leave OMP open for one full interval or run /claim manually.
+    runTick();
+    ctx.setInterval(runTick, CLAIM_POLL_MS);
   });
 }
 

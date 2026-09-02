@@ -1,70 +1,119 @@
 /**
  * Fireworks celebration for successful ZCode claims.
  *
- * The TUI-native analog of `tui.codexResetFireworks` (the Codex resets
- * celebration): a transient, focused overlay with an animated firework burst,
- * dismissed with Escape — or automatically after `autoCloseMs`, because the
- * auto-claimer may fire while nobody is at the keyboard.
- *
- * Rendering is pure and seeded, so the visual is deterministic and testable;
- * the component only drives time and input.
+ * This deliberately uses an editor widget rather than `ui.custom`: OMP's
+ * custom UI calls `TUI.showOverlay()`, which always moves keyboard focus to the
+ * component. A decorative celebration must never intercept Escape, Ctrl-C, or
+ * text intended for the editor.
  */
 
 /** Seconds→tick pacing for the animation loop (frames per second). */
 const FPS = 12;
 /** Burst glyphs, brightest first — pure ANSI text, no theme dependency. */
 const BURST_GLYPHS = ["✦", "✧", "✶", "✷", "*"];
+const FIREWORKS_WIDGET_KEY = "zcode-claim-fireworks";
+const DEFAULT_DURATION_MS = 12_000;
 
-/**
- * Minimal host surface needed to present the overlay — the slice of OMP's
- * `ExtensionContext` this helper consumes, so tests can stub it.
- */
+export interface ClaimFireworksTui {
+  requestRender(): void;
+}
+
+export interface ClaimFireworksMessage {
+  /** Large grant total, e.g. `100,000,000 TOKENS`. */
+  headline: string;
+  /** Plan, entitlement, validity, and account lines. */
+  lines: readonly string[];
+}
+
+export interface FireworksComponent {
+  render(width: number): readonly string[];
+  invalidate?(): void;
+}
+
+type FireworksWidgetContent =
+  | string[]
+  | ((tui: ClaimFireworksTui, theme: unknown) => FireworksComponent)
+  | undefined;
 export interface ClaimFireworksHost {
   mode: string;
   hasUI: boolean;
   ui: {
-    custom<T>(
-      factory: (tui: { requestRender(): void }, theme: unknown, keybindings: unknown, done: (result?: T) => void) => unknown,
-    ): Promise<T | undefined>;
+    setWidget(
+      key: string,
+      content: FireworksWidgetContent,
+      options?: { placement?: "aboveEditor" | "belowEditor" },
+    ): void;
   };
 }
 
+export interface ShowClaimFireworksOptions {
+  /** Real lifetime of the non-modal widget. */
+  durationMs?: number;
+}
+
+interface ActiveCelebration {
+  finish(): void;
+}
+
+const activeCelebrations = new WeakMap<ClaimFireworksHost, ActiveCelebration>();
+
 /**
- * Present the fireworks overlay for one successful claim.
+ * Show one centered, animated, non-modal celebration above the editor.
  *
- * No-op outside the interactive TUI or when `ZCODE_CLAIM_FIREWORKS=0`.
- * Dismissal: Escape (like the Codex resets celebration), or automatically
- * after `autoCloseMs` on the auto-claimer path, where nobody may be watching.
+ * The returned promise settles after the real timer removes the widget. Calls
+ * are intentionally fire-and-forget in claim paths; the editor stays focused.
+ * Starting another celebration replaces the prior one without letting its
+ * stale timer remove the new widget.
  */
 export async function showClaimFireworks(
   host: ClaimFireworksHost,
-  line: string,
-  options: { autoCloseMs?: number } = {},
+  message: ClaimFireworksMessage | string,
+  options: ShowClaimFireworksOptions = {},
 ): Promise<void> {
   if (process.env.ZCODE_CLAIM_FIREWORKS === "0") return;
   if (host.mode !== "tui" || !host.hasUI) return;
 
-  await host.ui.custom<void>((tui, _theme, _keybindings, done) => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    let finished = false;
-    // Drive the animation first: onFinish (Escape or auto-close) clears it,
-    // and the host may pump frames while the component is being created.
-    const pump = setInterval(() => tui.requestRender(), 1000 / FPS);
-    // Never keep OMP alive for a celebration.
-    pump.unref?.();
-    const component = createFireworksComponent({
-      line,
-      width: 80,
-      ...(options.autoCloseMs !== undefined ? { autoCloseMs: options.autoCloseMs, now: Date.now } : {}),
-      onFinish: () => {
-        finished = true;
-        clearInterval(pump);
-        resolve();
-        done();
-      },
-    });
-    return component;
-  });
+  // A scheduler created before an extension hot reload can retain the former
+  // string payload contract. Normalize at this UI boundary so a live session
+  // never crashes while source modules are being replaced.
+  const card: ClaimFireworksMessage =
+    typeof message === "string" ? { headline: "CLAIMED", lines: [message] } : message;
+  activeCelebrations.get(host)?.finish();
+
+  const { promise, resolve } = Promise.withResolvers<void>();
+  let pump: NodeJS.Timeout | undefined;
+  let timeout: NodeJS.Timeout | undefined;
+  let finished = false;
+
+  const state: ActiveCelebration = {
+    finish(): void {
+      if (finished) return;
+      finished = true;
+      clearInterval(pump);
+      clearTimeout(timeout);
+      if (activeCelebrations.get(host) === state) {
+        activeCelebrations.delete(host);
+        host.ui.setWidget(FIREWORKS_WIDGET_KEY, undefined);
+      }
+      resolve();
+    },
+  };
+  activeCelebrations.set(host, state);
+
+  host.ui.setWidget(
+    FIREWORKS_WIDGET_KEY,
+    (tui) => {
+      const component = createFireworksComponent(card);
+      pump = setInterval(() => tui.requestRender(), 1000 / FPS);
+      pump.unref?.();
+      return component;
+    },
+    { placement: "aboveEditor" },
+  );
+
+  timeout = setTimeout(state.finish, options.durationMs ?? DEFAULT_DURATION_MS);
+  timeout.unref?.();
+  await promise;
 }
 
 /** Deterministic PRNG (mulberry32) so renders are reproducible in tests. */
@@ -197,64 +246,24 @@ function paintRow(row: Array<string | undefined>): string {
   return out;
 }
 
-export interface FireworksComponentOptions {
-  /** The claim message displayed under the animation. */
-  line: string;
-  /** Render width used for clamping before the TUI measures the terminal. */
-  width: number;
-  /** Auto-dismiss after this many ms; omit to remain until Escape. */
-  autoCloseMs?: number;
-  /** Injected clock for auto-close expiry (tests). */
-  now?: () => number;
-  /** Called exactly once when the overlay should close. */
-  onFinish(): void;
-}
-
-export interface FireworksComponent {
-  render(width: number): readonly string[];
-  handleInput?(data: string): void;
-  invalidate?(): void;
-}
-
 /**
- * Build the overlay component. The host TUI drives rendering; `handleInput`
- * receives raw terminal data (Escape = `\x1b`) and empty data may be used by
- * the host as an expiry tick.
+ * Render-only widget component. It deliberately has no `handleInput`; keyboard
+ * input remains owned by OMP's editor for the entire celebration.
  */
-export function createFireworksComponent(options: FireworksComponentOptions): FireworksComponent {
-  const now = options.now ?? Date.now;
-  const startedAt = now();
-  const seed = startedAt % 2147483647;
-  let finished = false;
+export function createFireworksComponent(message: ClaimFireworksMessage): FireworksComponent {
+  const seed = Date.now() % 2147483647;
   let frame = 0;
-
-  const finish = (): void => {
-    if (finished) return;
-    finished = true;
-    options.onFinish();
-  };
 
   return {
     render(width: number): readonly string[] {
-      if (finished) return [];
       const canvasWidth = Math.max(20, width);
       const sky = fireworksFrame(frame, canvasWidth, seed);
       frame += 1;
       return [
         ...sky,
-        center(clampLine(options.line, canvasWidth), canvasWidth),
-        center(clampLine("\x1b[2mesc to dismiss\x1b[0m", canvasWidth), canvasWidth),
+        center(clampLine(`\x1b[1m${message.headline}\x1b[0m`, canvasWidth), canvasWidth),
+        ...message.lines.map((line) => center(clampLine(line, canvasWidth), canvasWidth)),
       ];
-    },
-
-    handleInput(data: string): void {
-      if (finished) return;
-      // The host may deliver empty data as a render/expiry tick.
-      if (data.length === 0) {
-        if (options.autoCloseMs !== undefined && now() - startedAt >= options.autoCloseMs) finish();
-        return;
-      }
-      if (data === "\x1b" || data === "q" || data === "Q") finish();
     },
 
     invalidate(): void {

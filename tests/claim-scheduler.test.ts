@@ -40,6 +40,7 @@ function makeHarness(configOverrides: Partial<{ planId: string; pollIntervalMs: 
   const logs: string[] = [];
   const notifications: string[] = [];
 
+  const claimed: Array<{ account: SchedulerAccount; plan: ClaimablePlan; outcome: ClaimOutcome }> = [];
   const scheduler = new ClaimScheduler({
     listAccounts: () => accounts,
     createClient: (account) => {
@@ -62,6 +63,7 @@ function makeHarness(configOverrides: Partial<{ planId: string; pollIntervalMs: 
     config: { pollIntervalMs: 300_000, cooldownMs: 600_000, ...configOverrides },
     log: (message) => logs.push(message),
     notify: (message) => notifications.push(message),
+    onClaimed: (account, plan, outcome) => claimed.push({ account, plan, outcome }),
     now: () => nowMs,
     // Deterministic account order regardless of storage ordering.
     compareAccounts: (a, b) => a.accountId.localeCompare(b.accountId),
@@ -75,6 +77,7 @@ function makeHarness(configOverrides: Partial<{ planId: string; pollIntervalMs: 
     byId,
     logs,
     notifications,
+    claimed,
     advance(ms: number) {
       nowMs += ms;
     },
@@ -101,6 +104,39 @@ describe("ClaimScheduler single-account upstream semantics", () => {
     // Inside the hold window: skipped.
     h.advance(1_000);
     expect(await h.scheduler.tick()).toEqual({ action: "skipped_hold" });
+  });
+
+  it("reports the exact account, plan, and outcome after a successful auto-claim", async () => {
+    const h = makeHarness();
+    const plan: ClaimablePlan = {
+      planId: "weekend-1",
+      name: "ZCode Global Build",
+      description: "",
+      priority: 1,
+      entitlements: [
+        {
+          entitlementId: "e-1",
+          showName: "GLM-5.3-Flash",
+          meter: "token",
+          unitType: "token",
+          capabilities: ["glm-5.3-flash"],
+          grantUnits: 100_000_000,
+          period: "one_time",
+          priority: 0,
+        },
+      ],
+    };
+    h.primary.plans = [plan];
+    h.primary.claimOutcome = { ok: true, planId: plan.planId, endsAt: 1_788_314_400 };
+
+    await h.scheduler.tick();
+
+    expect(h.claimed).toHaveLength(1);
+    expect(h.claimed[0]).toEqual({
+      account: { jwt: "jwt-1", accountId: "acc-1", email: "a@x.dev" },
+      plan,
+      outcome: { ok: true, planId: plan.planId, endsAt: 1_788_314_400 },
+    });
   });
 
   it("claims the configured planId when set (ignores priority)", async () => {

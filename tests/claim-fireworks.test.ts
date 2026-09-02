@@ -76,60 +76,31 @@ describe("fireworksFrame", () => {
 });
 
 describe("createFireworksComponent", () => {
-  it("finishes on Escape input", () => {
-    let finished = 0;
-    const component = createFireworksComponent({
-      line: "ZCode claim: test",
-      width: 80,
-      onFinish: () => {
-        finished += 1;
-      },
-    });
-    component.handleInput?.("\x1b");
-    expect(finished).toBe(1);
+  const message = {
+    headline: "100,000,000 TOKENS",
+    lines: ["ZCode Global Build", "GLM-5.3-Flash · 100M tokens · one-time", "a@b.dev"],
+  };
+
+  it("has no keyboard handler, so the editor retains all input", () => {
+    const component = createFireworksComponent(message);
+    expect("handleInput" in component).toBe(false);
   });
 
-  it("ignores ordinary keys", () => {
-    let finished = 0;
-    const component = createFireworksComponent({
-      line: "ZCode claim: test",
-      width: 80,
-      onFinish: () => {
-        finished += 1;
-      },
-    });
-    component.handleInput?.("x");
-    expect(finished).toBe(0);
+  it("renders the full claim details under the animation", () => {
+    const plain = createFireworksComponent(message)
+      .render(80)
+      .join("\n")
+      .replace(/\x1b\[[0-9;]*m/g, "");
+    expect(plain).toContain("100,000,000 TOKENS");
+    expect(plain).toContain("GLM-5.3-Flash · 100M tokens · one-time");
+    expect(plain).toContain("a@b.dev");
+    expect(plain).not.toContain("esc to dismiss");
   });
 
-  it("auto-finishes after the timeout measured by the injected clock", () => {
-    let nowMs = 0;
-    let finished = 0;
-    const component = createFireworksComponent({
-      line: "ZCode claim: test",
-      width: 80,
-      autoCloseMs: 15_000,
-      now: () => nowMs,
-      onFinish: () => {
-        finished += 1;
-      },
-    });
-    nowMs = 14_999;
-    component.handleInput?.(""); // tick hook: empty data also drives expiry check
-    expect(finished).toBe(0);
-    nowMs = 15_001;
-    component.handleInput?.("");
-    expect(finished).toBe(1);
-  });
-
-  it("renders lines within the requested width", () => {
-    const component = createFireworksComponent({
-      line: "ZCode claim: test",
-      width: 40,
-      onFinish: () => {},
-    });
+  it("keeps every visible line within the requested width", () => {
+    const component = createFireworksComponent(message);
     for (const line of component.render(40)) {
-      expect(line.length).toBeLessThanOrEqual(40);
+      expect(line.replace(/\x1b\[[0-9;]*m/g, "").length).toBeLessThanOrEqual(40);
     }
   });
 });
