@@ -165,6 +165,61 @@ export const VENDORED_FILES: VendoredFile[] = [
       },
     ],
   },
+  {
+    // Upstream's own suite for the vendored pool: it is the regression net for
+    // the storm/idle/decay behaviour, so it is copied too. OMP-only pool tests
+    // live in tests/captcha-pool-omp.test.ts precisely so this copy stays thin.
+    local: "tests/captcha-pool.test.ts",
+    upstream: "src/proxy/captcha-pool.test.ts",
+    allowed: [
+      {
+        marker: 'import * as realSolver from "../src/captcha-solver.js";',
+        reason:
+          "`mock.module` is process-wide, so the solver stand-in must spread the real module or other test files lose its remaining exports.",
+      },
+      {
+        marker: 'mock.module("../src/captcha-solver.js"',
+        replaces: 'mock.module("./captcha-solver.js"',
+        reason: "Import path differs because OMP keeps tests in tests/ rather than beside the source.",
+      },
+      { marker: "...realSolver,", reason: "Keeps every real export in the process-wide stand-in." },
+      {
+        marker: "// `mock.module` is process-wide",
+        reason: "First line of the comment explaining the process-wide stand-in.",
+      },
+      {
+        marker: "// test files can still import its remaining exports",
+        reason: "Comment continuation for the process-wide stand-in.",
+      },
+      {
+        marker: 'await import("../src/captcha-pool.js")',
+        replaces: 'await import("./captcha-pool.js")',
+        reason: "Import path differs because OMP keeps tests in tests/.",
+      },
+    ],
+  },
+  {
+    local: "tests/captcha-token.test.ts",
+    upstream: "src/proxy/captcha-token.test.ts",
+    allowed: [
+      {
+        marker: "../src/captcha-token.js",
+        replaces: "./captcha-token.js",
+        reason: "Import path differs because OMP keeps tests in tests/ rather than beside the source.",
+      },
+    ],
+  },
+  {
+    local: "tests/captcha-cpu-governor.test.ts",
+    upstream: "src/proxy/captcha-cpu-governor.test.ts",
+    allowed: [
+      {
+        marker: "../src/captcha-cpu-governor.js",
+        replaces: "./captcha-cpu-governor.js",
+        reason: "Import path differs because OMP keeps tests in tests/ rather than beside the source.",
+      },
+    ],
+  },
   { local: "src/captcha-token.ts", upstream: "src/proxy/captcha-token.ts", allowed: [] },
   { local: "src/captcha-cpu-governor.ts", upstream: "src/proxy/captcha-cpu-governor.ts", allowed: [] },
   { local: "src/zcode_system.json", upstream: "src/proxy/zcode_system.json", allowed: [] },

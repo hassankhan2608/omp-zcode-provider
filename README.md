@@ -29,7 +29,9 @@ implementation in this extension.
 
 `src/captcha-happy.ts`, `src/captcha.ts`, `src/captcha-pool.ts`,
 `src/captcha-token.ts`, `src/captcha-cpu-governor.ts`, `src/zcode_system.json`
-and `tests/captcha-happy.test.ts` are byte copies of
+and their four upstream test files (`tests/captcha-happy.test.ts`,
+`tests/captcha-pool.test.ts`, `tests/captcha-token.test.ts`,
+`tests/captcha-cpu-governor.test.ts`) are byte copies of
 [`zcode-api`](https://github.com/TriDefender/zcode-api).
 
 That code encodes knowledge that is expensive to rediscover: which browser
@@ -44,6 +46,9 @@ resolve `Text`/`document`. When any of it is wrong the only symptom is
 - Inside those files, upstream's style wins over this repo's conventions
   (e.g. `catch (_) {}`), because a style-only difference costs a real diff on
   every future sync. They are excluded from ESLint for the same reason.
+- **OMP-only tests go in an OMP-owned file.** `tests/captcha-pool-omp.test.ts`
+  exists so the vendored suite stays thin: an OMP regression added inside the
+  copy would need every one of its lines registered as an allowed divergence.
 
 ### Syncing a new upstream commit
 
@@ -73,7 +78,7 @@ Set `ZCODE_API_REPO` if your checkout is not at `~/repos/zcode-api`.
 ## Commands
 
 ```bash
-bun test             # 328 tests, no network except the marked live checks
+bun test             # 358 tests, no network except the marked live checks
 bun run typecheck    # tsc --noEmit
 bun run lint         # typed ESLint; findings are advisory, not a gate
 bun run parity       # vendored-file drift check

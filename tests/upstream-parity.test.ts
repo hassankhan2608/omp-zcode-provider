@@ -110,7 +110,10 @@ describe("VENDORED_FILES manifest", () => {
       "src/captcha-token.ts",
       "src/captcha.ts",
       "src/zcode_system.json",
+      "tests/captcha-cpu-governor.test.ts",
       "tests/captcha-happy.test.ts",
+      "tests/captcha-pool.test.ts",
+      "tests/captcha-token.test.ts",
     ]);
   });
 

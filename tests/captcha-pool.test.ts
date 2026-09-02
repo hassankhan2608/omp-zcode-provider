@@ -5,10 +5,8 @@ const solveMock = mock(async (_scene: string, _region: string, _prefix: string) 
   return "x".repeat(64);
 });
 
-// `mock.module` replaces the module for the whole test process, so the stand-in
-// must keep every export the real module has - otherwise a later test file
-// importing `createCaptchaSolver` from it fails to resolve. Only the solve
-// entry point and its stats are faked here.
+// `mock.module` is process-wide: the stand-in spreads the real module so other
+// test files can still import its remaining exports (see captcha-solver.test.ts).
 mock.module("../src/captcha-solver.js", () => ({
   ...realSolver,
   runCaptchaSolve: solveMock,
@@ -329,64 +327,5 @@ describe("CaptchaTokenPool deep idle", () => {
     p2.noteMintSuccess();
     for (let i = 0; i < 10; i++) p2.noteMintFailure("stall");
     expect(fired2.length).toBe(0);
-  });
-});
-
-describe("CaptchaTokenPool take deadline (OMP process-exit boundary)", () => {
-  it("does not leave the losing race timer holding the event loop open", async () => {
-    // Upstream is a long-lived proxy, so a 25s timer left pending after a fast
-    // take costs it nothing. OMP also runs as `omp -p`, which exits when its
-    // work is done - a pending timer there delays process exit by the full
-    // deadline (measured: a 2ms take kept the process alive 25.5s).
-    process.env.ZCODE_CAPTCHA_SKIP_DEPS = "1";
-    // Earlier describes leave the solver stub rejecting; this test needs a
-    // fast success so the race resolves long before its deadline.
-    solveMock.mockImplementation(async () => "x".repeat(64));
-    const timers: Array<{ ms: number; handle: unknown; unrefed: boolean; cleared: boolean }> = [];
-    const realSetTimeout = globalThis.setTimeout;
-    const realClearTimeout = globalThis.clearTimeout;
-
-    globalThis.setTimeout = ((callback: () => void, ms?: number, ...args: unknown[]) => {
-      const handle = realSetTimeout(callback, ms, ...args);
-      const record = { ms: ms ?? 0, handle, unrefed: false, cleared: false };
-      timers.push(record);
-      const originalUnref = handle.unref?.bind(handle);
-      handle.unref = () => {
-        record.unrefed = true;
-        return originalUnref ? originalUnref() : handle;
-      };
-      return handle;
-    }) as typeof globalThis.setTimeout;
-
-    globalThis.clearTimeout = ((handle: unknown) => {
-      for (const record of timers) if (record.handle === handle) record.cleared = true;
-      return realClearTimeout(handle as Parameters<typeof realClearTimeout>[0]);
-    }) as typeof globalThis.clearTimeout;
-
-    try {
-      const racePool = new CaptchaTokenPool({
-        poolSizeMin: 1,
-        poolSizeMax: 2,
-        tokenTtlMs: 60_000,
-        refillIntervalMs: 600_000,
-        staggerMs: 0,
-        solveRetries: 1,
-        solveConcurrency: 1,
-        scaleDownIdleMs: 600_000,
-      });
-      const token = await racePool.takeToken(CFG);
-      racePool.stopBackgroundRefill();
-      expect(token.length).toBeGreaterThan(0);
-
-      // The deadline timer is the long one (>= 1s floor in the pool).
-      const deadlineTimers = timers.filter((record) => record.ms >= 1_000);
-      expect(deadlineTimers.length).toBeGreaterThan(0);
-      for (const record of deadlineTimers) {
-        expect(record.cleared || record.unrefed).toBe(true);
-      }
-    } finally {
-      globalThis.setTimeout = realSetTimeout;
-      globalThis.clearTimeout = realClearTimeout;
-    }
   });
 });
