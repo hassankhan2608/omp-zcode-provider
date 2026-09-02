@@ -10,6 +10,7 @@
  * it file contents and the pinned upstream revision.
  */
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { classifyDivergence, parityReport, VENDORED_FILES, type VendoredFile } from "../upstream-parity.js";
 
 const ENTRY: VendoredFile = {
@@ -80,24 +81,24 @@ describe("parityReport", () => {
       read({ "src/proxy/demo.ts": "a\n" }),
     );
     expect(report.ok).toBe(true);
-    expect(report.files[0]!.explained).toHaveLength(1);
+    expect(report.files[0].explained).toHaveLength(1);
   });
 
   it("fails and names the file when an unexplained difference appears", () => {
     const report = parityReport([ENTRY], read({ "src/demo.ts": "a\nb\n" }), read({ "src/proxy/demo.ts": "a\n" }));
     expect(report.ok).toBe(false);
-    expect(report.files[0]!.local).toBe("src/demo.ts");
-    expect(report.files[0]!.unexplained).toEqual(["+b"]);
+    expect(report.files[0].local).toBe("src/demo.ts");
+    expect(report.files[0].unexplained).toEqual(["+b"]);
   });
 
   it("fails loudly when a vendored file is missing on either side", () => {
     const missingLocal = parityReport([ENTRY], read({}), read({ "src/proxy/demo.ts": "a\n" }));
     expect(missingLocal.ok).toBe(false);
-    expect(missingLocal.files[0]!.error).toContain("missing locally");
+    expect(missingLocal.files[0].error).toContain("missing locally");
 
     const missingUpstream = parityReport([ENTRY], read({ "src/demo.ts": "a\n" }), read({}));
     expect(missingUpstream.ok).toBe(false);
-    expect(missingUpstream.files[0]!.error).toContain("missing upstream");
+    expect(missingUpstream.files[0].error).toContain("missing upstream");
   });
 });
 
@@ -115,6 +116,19 @@ describe("VENDORED_FILES manifest", () => {
       "tests/captcha-pool.test.ts",
       "tests/captcha-token.test.ts",
     ]);
+  });
+
+
+  it("is fully excluded from ESLint, so vendored files never drift for style", () => {
+    // Linting a byte copy invites style-only edits, and every one of those is a
+    // real diff on the next port. The ignore list lives in eslint.config.js
+    // (flat config cannot import this TypeScript manifest without jiti), so
+    // this test is what keeps the two in step.
+    const config = readFileSync(new URL("../eslint.config.js", import.meta.url), "utf-8");
+    for (const entry of VENDORED_FILES) {
+      if (entry.local.endsWith(".json")) continue; // ESLint never lints JSON here.
+      expect(config).toContain(`"${entry.local}"`);
+    }
   });
 
   it("documents a reason for every allowed divergence, so nothing is silently excused", () => {

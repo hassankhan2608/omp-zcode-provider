@@ -124,18 +124,18 @@ describe("request shape", () => {
     const { calls, ctx } = ctxFor(() => json(liveBalance()));
     await zcodeUsageProvider.fetchUsage(params(), ctx);
 
-    expect(calls[0]!.url).toStartWith("https://zcode.z.ai/api/v1/zcode-plan/billing/balance?");
-    expect(calls[0]!.url).toContain("app_version=");
+    expect(calls[0].url).toStartWith("https://zcode.z.ai/api/v1/zcode-plan/billing/balance?");
+    expect(calls[0].url).toContain("app_version=");
     // No `Bearer` prefix — matches the desktop client's
     // `fetchZaiStartPlanBalanceEnvelope`.
-    expect(calls[0]!.auth).toBe(JWT);
+    expect(calls[0].auth).toBe(JWT);
   });
 
   it("sends the ZCode identity headers, without which the gateway answers 3001", async () => {
     const { calls, ctx } = ctxFor(() => json(liveBalance()));
     await zcodeUsageProvider.fetchUsage(params(), ctx);
 
-    const headers = calls[0]!.headers;
+    const headers = calls[0].headers;
     expect(headers.get("http-referer")).toBe("https://zcode.z.ai");
     expect(headers.get("user-agent")).toBe("ZCode/3.10.1");
     expect(headers.get("x-title")).toBe("Z Code@cli");
@@ -146,7 +146,7 @@ describe("request shape", () => {
     const { calls, ctx } = ctxFor(() => json(liveBalance()));
     await zcodeUsageProvider.fetchUsage(params("u-1"), ctx);
     await zcodeUsageProvider.fetchUsage(params("u-2"), ctx);
-    expect(calls[0]!.headers.get("x-device-mid")).not.toBe(calls[1]!.headers.get("x-device-mid"));
+    expect(calls[0].headers.get("x-device-mid")).not.toBe(calls[1].headers.get("x-device-mid"));
   });
 });
 
@@ -196,8 +196,8 @@ describe("report mapping", () => {
 
   it("marks an emptied bucket exhausted so credential ranking can move on", async () => {
     const body = liveBalance() as { data: { balances: Array<Record<string, unknown>> } };
-    body.data.balances[1]!.available_units = 0;
-    body.data.balances[1]!.used_units = 3_000_000;
+    body.data.balances[1].available_units = 0;
+    body.data.balances[1].used_units = 3_000_000;
     const { ctx } = ctxFor(() => json(body));
     const report = (await zcodeUsageProvider.fetchUsage(params(), ctx))!;
     expect(report.limits.find((limit) => limit.id === "bucket_53")!.status).toBe("exhausted");
@@ -205,8 +205,8 @@ describe("report mapping", () => {
 
   it("warns from ninety percent consumed", async () => {
     const body = liveBalance() as { data: { balances: Array<Record<string, unknown>> } };
-    body.data.balances[1]!.used_units = 2_800_000;
-    body.data.balances[1]!.available_units = 200_000;
+    body.data.balances[1].used_units = 2_800_000;
+    body.data.balances[1].available_units = 200_000;
     const { ctx } = ctxFor(() => json(body));
     const report = (await zcodeUsageProvider.fetchUsage(params(), ctx))!;
     expect(report.limits.find((limit) => limit.id === "bucket_53")!.status).toBe("warning");
@@ -214,7 +214,7 @@ describe("report mapping", () => {
 
   it("lists every covered model when a bucket spans more than one", async () => {
     const body = liveBalance() as { data: { balances: Array<Record<string, unknown>> } };
-    body.data.balances[1]!.capabilities = ["model:glm-5.3", "model:glm-5.3-flash"];
+    body.data.balances[1].capabilities = ["model:glm-5.3", "model:glm-5.3-flash"];
     const { ctx } = ctxFor(() => json(body));
     const report = (await zcodeUsageProvider.fetchUsage(params(), ctx))!;
     const limit = report.limits.find((entry) => entry.id === "bucket_53")!;
@@ -224,7 +224,7 @@ describe("report mapping", () => {
 
   it("passes an unrecognized capability id through unchanged", async () => {
     const body = liveBalance() as { data: { balances: Array<Record<string, unknown>> } };
-    body.data.balances[1]!.capabilities = ["model:glm-9-experimental"];
+    body.data.balances[1].capabilities = ["model:glm-9-experimental"];
     const { ctx } = ctxFor(() => json(body));
     const report = (await zcodeUsageProvider.fetchUsage(params(), ctx))!;
     expect(report.limits.find((entry) => entry.id === "bucket_53")!.scope.modelId).toBe("glm-9-experimental");
@@ -232,7 +232,7 @@ describe("report mapping", () => {
 
   it("falls back to show_name when a bucket names no capability", async () => {
     const body = liveBalance() as { data: { balances: Array<Record<string, unknown>> } };
-    body.data.balances[1]!.capabilities = [];
+    body.data.balances[1].capabilities = [];
     const { ctx } = ctxFor(() => json(body));
     const report = (await zcodeUsageProvider.fetchUsage(params(), ctx))!;
     expect(report.limits.find((entry) => entry.id === "bucket_53")!.scope.modelId).toBe("GLM-5.3");
@@ -269,8 +269,8 @@ describe("per-account isolation", () => {
     const second = (await zcodeUsageProvider.fetchUsage(params("u-2"), ctx))!;
 
     expect(calls).toHaveLength(2);
-    expect(first.limits[0]!.scope.accountId).toBe("u-1");
-    expect(second.limits[0]!.scope.accountId).toBe("u-2");
+    expect(first.limits[0].scope.accountId).toBe("u-1");
+    expect(second.limits[0].scope.accountId).toBe("u-2");
   });
 
   it("keeps one account's stale data out of another's report", async () => {
@@ -294,7 +294,7 @@ describe("failure policy", () => {
     const report = (await primeThenFail(() => json({}, 503)))!;
     expect(report.limits.map((limit) => limit.id)).toEqual(["bucket_wk", "bucket_53", "bucket_53f"]);
     // Amounts survive verbatim; only the status is downgraded.
-    expect(report.limits[1]!.amount.remaining).toBe(2_984_778);
+    expect(report.limits[1].amount.remaining).toBe(2_984_778);
     expect(report.limits.every((limit) => limit.status === "unknown")).toBe(true);
     expect(report.notes!.some((note) => note.startsWith("Stale —"))).toBe(true);
   });
@@ -311,7 +311,7 @@ describe("failure policy", () => {
     const ctx: UsageFetchContext = {
       fetch: (async () => {
         throw new Error("offline");
-      }) as UsageFetchContext["fetch"],
+      }),
     };
     const report = (await zcodeUsageProvider.fetchUsage(params(), ctx))!;
     expect(report.limits).toHaveLength(3);
@@ -321,7 +321,7 @@ describe("failure policy", () => {
   it("never reports a zero quota in place of an unavailable refresh", async () => {
     const report = (await primeThenFail(() => json({ code: 0, data: { plans: [], balances: [] } })))!;
     expect(report.limits).toHaveLength(3);
-    expect(report.limits[1]!.amount.limit).toBe(3_000_000);
+    expect(report.limits[1].amount.limit).toBe(3_000_000);
   });
 
   it("returns null when nothing was ever fetched and the refresh fails", async () => {

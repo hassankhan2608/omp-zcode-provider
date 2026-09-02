@@ -121,10 +121,10 @@ export function createStreamSimple(fetchImpl?: typeof fetch, captcha?: CaptchaMo
       fetch: (input, init) =>
         dispatchStartPlanRequest(
           { accountId, jwt, ...(fetchImpl ? { fetchImpl } : {}), ...(captcha ? { captcha } : {}) },
-          input as RequestInfo | URL,
-          init as RequestInit | undefined,
+          input,
+          init,
         ),
-    } as Parameters<typeof streamAnthropic>[2]);
+    });
   };
 }
 
@@ -210,12 +210,16 @@ async function claimCaptcha(deps: ExtensionDependencies): Promise<{ verifyParam:
  * scheduler holds/cools down per zcode-api's state machine.
  */
 function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
+  // `pi.logger` is OMP's native file logger (~/.config/omp/logs). `console.log`
+  // would write straight into the TUI's screen buffer and corrupt the rendered
+  // frame, so diagnostics go to the logger and user-facing text goes to the
+  // transcript entry.
   const appendNotice = (message: string): void => {
-    console.log(`[claim] ${message}`);
+    pi.logger.debug(`[claim] ${message}`);
     try {
       pi.appendEntry("zcode-claim", { message });
     } catch {
- // Entry append is best-effort; the console line above already informs.
+      // Entry append is best-effort; the logged line above still records it.
     }
   };
 
@@ -292,7 +296,7 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
       createClient: (account) => createClaimClient({ account, fetchImpl: deps.fetchImpl }),
       getCaptcha: () => claimCaptcha(deps),
       config: { pollIntervalMs: CLAIM_POLL_MS, cooldownMs: CLAIM_COOLDOWN_MS },
-      log: (message) => console.log(`[claim] ${message}`),
+      log: (message) => pi.logger.debug(`[claim] ${message}`),
       notify: appendNotice,
       // Buffered for the duration of one tick, then shown as one card - see
       // mergeCelebrations(): a tick can claim for several accounts, and the
@@ -327,7 +331,7 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
           if (combined) void showClaimFireworks(ctx, combined);
         })
         .catch((error: unknown) => {
-          console.error(`[claim] scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
+          pi.logger.error(`[claim] scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
         })
         .finally(() => {
           running = false;

@@ -55,7 +55,7 @@ function recorder(responses: Response[]): { calls: Capture[]; fetchImpl: typeof 
   const fetchImpl = asFetch(async (input, init) => {
     const request = new Request(input, init);
     calls.push({ url: request.url, headers: request.headers, body: await request.text() });
-    const response = responses[Math.min(index, responses.length - 1)]!;
+    const response = responses[Math.min(index, responses.length - 1)];
     index += 1;
     return response;
   });
@@ -100,7 +100,7 @@ afterEach(() => {
 describe("upstream target", () => {
   it("targets the Start Plan Anthropic gateway regardless of the caller's URL", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    expect(calls[0]!.url).toBe(STARTPLAN_MESSAGES_URL);
+    expect(calls[0].url).toBe(STARTPLAN_MESSAGES_URL);
     expect(STARTPLAN_MESSAGES_URL).toBe("https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages");
   });
 });
@@ -108,20 +108,20 @@ describe("upstream target", () => {
 describe("auth headers", () => {
   it("authenticates with the plan JWT as a bearer token", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    expect(calls[0]!.headers.get("authorization")).toBe(`Bearer ${JWT}`);
-    expect(calls[0]!.headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(calls[0].headers.get("authorization")).toBe(`Bearer ${JWT}`);
+    expect(calls[0].headers.get("anthropic-version")).toBe("2023-06-01");
   });
 
   it("never forwards an inbound x-api-key", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    expect(calls[0]!.headers.get("x-api-key")).toBeNull();
+    expect(calls[0].headers.get("x-api-key")).toBeNull();
   });
 });
 
 describe("identity headers", () => {
   it("sends the ZCode desktop fingerprint with this account's device id", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    const headers = calls[0]!.headers;
+    const headers = calls[0].headers;
     expect(headers.get("http-referer")).toBe("https://zcode.z.ai");
     expect(headers.get("user-agent")).toBe("ZCode/3.10.1");
     expect(headers.get("x-zcode-app-version")).toBe("3.10.1");
@@ -134,7 +134,7 @@ describe("identity headers", () => {
   it("gives each account a different device id", async () => {
     const first = await dispatch([ok()], captchaStub(), {}, "u-1");
     const second = await dispatch([ok()], captchaStub(), {}, "u-2");
-    expect(first.calls[0]!.headers.get("x-device-mid")).not.toBe(second.calls[0]!.headers.get("x-device-mid"));
+    expect(first.calls[0].headers.get("x-device-mid")).not.toBe(second.calls[0].headers.get("x-device-mid"));
   });
 });
 
@@ -142,27 +142,27 @@ describe("trace headers", () => {
   it("emits fresh trace ids per request", async () => {
     const first = await dispatch([ok()], captchaStub());
     const second = await dispatch([ok()], captchaStub());
-    expect(first.calls[0]!.headers.get("x-zcode-session-type")).toBe("main");
-    expect(first.calls[0]!.headers.get("x-request-id")).not.toBe(second.calls[0]!.headers.get("x-request-id"));
-    expect(first.calls[0]!.headers.get("x-zcode-trace-id")).not.toBe(
-      second.calls[0]!.headers.get("x-zcode-trace-id"),
+    expect(first.calls[0].headers.get("x-zcode-session-type")).toBe("main");
+    expect(first.calls[0].headers.get("x-request-id")).not.toBe(second.calls[0].headers.get("x-request-id"));
+    expect(first.calls[0].headers.get("x-zcode-trace-id")).not.toBe(
+      second.calls[0].headers.get("x-zcode-trace-id"),
     );
   });
 
   it("omits x-query-id and x-session-id, which start-plan does not send", async () => {
     // zcode-api `buildTraceHeaders` emits both only when plan !== "start-plan".
     const { calls } = await dispatch([ok()], captchaStub());
-    expect(calls[0]!.headers.get("x-query-id")).toBeNull();
-    expect(calls[0]!.headers.get("x-session-id")).toBeNull();
+    expect(calls[0].headers.get("x-query-id")).toBeNull();
+    expect(calls[0].headers.get("x-session-id")).toBeNull();
   });
 
   it("sends no cookie jar, matching zcode-api's start-plan path", async () => {
     const { calls } = await dispatch([ok("{}", { "set-cookie": "acw_tc=abc; Path=/" })], captchaStub());
-    expect(calls[0]!.headers.get("cookie")).toBeNull();
+    expect(calls[0].headers.get("cookie")).toBeNull();
 
     // A gateway set-cookie must not start being replayed on the next request.
     const next = await dispatch([ok()], captchaStub());
-    expect(next.calls[0]!.headers.get("cookie")).toBeNull();
+    expect(next.calls[0].headers.get("cookie")).toBeNull();
   });
 });
 
@@ -181,7 +181,7 @@ describe("inbound header passthrough", () => {
 
   it("drops every Claude-shaped header OMP's anthropic client adds", async () => {
     const { calls } = await dispatch([ok()], captchaStub(), CLAUDE_FINGERPRINT);
-    const headers = calls[0]!.headers;
+    const headers = calls[0].headers;
     expect(headers.get("x-app")).toBeNull();
     expect(headers.get("anthropic-dangerous-direct-browser-access")).toBeNull();
     expect(headers.get("accept")).toBeNull();
@@ -193,7 +193,7 @@ describe("inbound header passthrough", () => {
 
   it("forwards anthropic-beta, the one header zcode-api passes through", async () => {
     const { calls } = await dispatch([ok()], captchaStub(), { "anthropic-beta": "effort-2025-11-24" });
-    expect(calls[0]!.headers.get("anthropic-beta")).toBe("effort-2025-11-24");
+    expect(calls[0].headers.get("anthropic-beta")).toBe("effort-2025-11-24");
   });
 
   it("drops inbound trace ids instead of forwarding client-supplied ones", async () => {
@@ -203,7 +203,7 @@ describe("inbound header passthrough", () => {
       "x-request-id": "spoofed",
       "x-zcode-trace-id": "spoofed",
     });
-    const headers = calls[0]!.headers;
+    const headers = calls[0].headers;
     expect(headers.get("x-query-id")).toBeNull();
     expect(headers.get("x-session-id")).toBeNull();
     expect(headers.get("x-request-id")).not.toBe("spoofed");
@@ -213,7 +213,7 @@ describe("inbound header passthrough", () => {
   it("emits exactly the reference header set", async () => {
     const { calls } = await dispatch([ok()], captchaStub(), CLAUDE_FINGERPRINT);
     // Verbatim from zcode-api `serve debug` for the same request.
-    expect([...calls[0]!.headers.keys()].sort()).toEqual([
+    expect([...calls[0].headers.keys()].sort()).toEqual([
       "accept-encoding",
       "anthropic-version",
       "authorization",
@@ -242,46 +242,46 @@ describe("inbound header passthrough", () => {
 describe("content negotiation", () => {
   it("defaults accept-encoding to gzip", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    expect(calls[0]!.headers.get("accept-encoding")).toBe("gzip");
+    expect(calls[0].headers.get("accept-encoding")).toBe("gzip");
   });
 
   it("forwards the caller's accept-encoding when it set one", async () => {
     const { calls } = await dispatch([ok()], captchaStub(), { "accept-encoding": "identity" });
-    expect(calls[0]!.headers.get("accept-encoding")).toBe("identity");
+    expect(calls[0].headers.get("accept-encoding")).toBe("identity");
   });
 
   it("sends json content-type", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    expect(calls[0]!.headers.get("content-type")).toBe("application/json");
+    expect(calls[0].headers.get("content-type")).toBe("application/json");
   });
 });
 
 describe("body transforms", () => {
   it("prepends the ZCode system blocks and marks cache_control", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    const sent = JSON.parse(calls[0]!.body) as {
+    const sent = JSON.parse(calls[0].body) as {
       system: Array<{ text: string }>;
       messages: Array<{ content: Array<{ cache_control?: unknown }> }>;
     };
-    expect(sent.system[0]!.text).toBe("You are ZCode, an interactive coding agent");
+    expect(sent.system[0].text).toBe("You are ZCode, an interactive coding agent");
     expect(sent.system.at(-1)!.text).toBe("- You are powered by the model named GLM-5.3.");
-    expect(sent.messages[0]!.content[0]!.cache_control).toEqual({ type: "ephemeral" });
+    expect(sent.messages[0].content[0].cache_control).toEqual({ type: "ephemeral" });
   });
 });
 
 describe("captcha", () => {
   it("attaches the pooled verify param and region", async () => {
     const { calls } = await dispatch([ok()], captchaStub());
-    expect(calls[0]!.headers.get("x-aliyun-captcha-verify-param")).toBe("param-1");
-    expect(calls[0]!.headers.get("x-aliyun-captcha-verify-region")).toBe("sgp");
+    expect(calls[0].headers.get("x-aliyun-captcha-verify-param")).toBe("param-1");
+    expect(calls[0].headers.get("x-aliyun-captcha-verify-region")).toBe("sgp");
   });
 
   it("retries exactly once with a fresh token on an explicit challenge", async () => {
     const captcha = captchaStub();
     const { calls } = await dispatch([challenged(), ok()], captcha);
     expect(calls).toHaveLength(2);
-    expect(calls[0]!.headers.get("x-aliyun-captcha-verify-param")).toBe("param-1");
-    expect(calls[1]!.headers.get("x-aliyun-captcha-verify-param")).toBe("param-2");
+    expect(calls[0].headers.get("x-aliyun-captcha-verify-param")).toBe("param-1");
+    expect(calls[1].headers.get("x-aliyun-captcha-verify-param")).toBe("param-2");
     expect(captcha.urgent).toBe(1);
   });
 
@@ -297,7 +297,7 @@ describe("captcha", () => {
       },
     });
     const { calls, response } = await dispatch([ok()], captcha);
-    expect(calls[0]!.headers.get("x-aliyun-captcha-verify-param")).toBeNull();
+    expect(calls[0].headers.get("x-aliyun-captcha-verify-param")).toBeNull();
     expect(response.status).toBe(200);
   });
 
@@ -355,9 +355,9 @@ describe("gateway resilience (upstream v4.5.0)", () => {
     );
     const { calls } = await dispatch([inBodyChallenge, ok()], captcha);
     // The gateway did not set the challenge header; the JSON body is the signal.
-    expect(calls[0]!.headers.get("x-aliyun-captcha-verify-param")).toBe("param-1");
+    expect(calls[0].headers.get("x-aliyun-captcha-verify-param")).toBe("param-1");
     expect(calls).toHaveLength(2);
-    expect(calls[1]!.headers.get("x-aliyun-captcha-verify-param")).toBe("param-2");
+    expect(calls[1].headers.get("x-aliyun-captcha-verify-param")).toBe("param-2");
     expect(captcha.urgent).toBe(1);
   });
 

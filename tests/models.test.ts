@@ -70,7 +70,7 @@ describe("fetchStartPlanCatalog", () => {
   it("requests the client-config endpoint with app version and platform", async () => {
     let seen = "";
     const fetchImpl = asFetch(async (input) => {
-      seen = String(input);
+      seen = input instanceof Request ? input.url : String(input);
       return configResponse(payload([builtinModel()]));
     });
 
@@ -84,7 +84,7 @@ describe("fetchStartPlanCatalog", () => {
     const models = await fetchStartPlanCatalog({ fetchImpl: always(payload([builtinModel()])) });
 
     expect(models).toHaveLength(1);
-    const model = models![0]!;
+    const model = models![0];
     // Case is preserved verbatim: the gateway matches model ids case-sensitively.
     expect(model.id).toBe("GLM-5.3");
     expect(model.contextWindow).toBe(1_000_000);
@@ -95,7 +95,7 @@ describe("fetchStartPlanCatalog", () => {
 
   it("carries the GLM-5.3 effort ladder and default level", async () => {
     const models = await fetchStartPlanCatalog({ fetchImpl: always(payload([builtinModel()])) });
-    expect(models![0]!.thinking as unknown).toEqual(GLM53_THINKING);
+    expect(models![0].thinking as unknown).toEqual(GLM53_THINKING);
   });
 
   it("marks vision from capabilities or modalities", async () => {
@@ -119,7 +119,7 @@ describe("fetchStartPlanCatalog", () => {
     const models = await fetchStartPlanCatalog({
       fetchImpl: always(payload([builtinModel({ modalities: { input: ["text", "image", "video"] } })])),
     });
-    expect(models![0]!.input).toEqual(["text", "image"]);
+    expect(models![0].input).toEqual(["text", "image"]);
   });
 
   it("narrows the catalog to the Start Plan entitlements", async () => {
@@ -265,6 +265,6 @@ describe("FALLBACK_MODELS", () => {
       expect(model.reasoning).toBe(true);
       expect(model.thinking as unknown).toEqual(GLM53_THINKING);
     }
-    expect(FALLBACK_MODELS[1]!.input).toEqual(["text", "image"]);
+    expect(FALLBACK_MODELS[1].input).toEqual(["text", "image"]);
   });
 });

@@ -52,8 +52,13 @@ export interface ClaimSchedulerDeps {
   /** Structured success hook for rich native UI; fires once per claimed plan. */
   onClaimed?: (account: SchedulerAccount, plan: ClaimablePlan, outcome: Extract<ClaimOutcome, { ok: true }>) => void;
   now?: () => number;
-  /** Stable account ordering for tests; default keeps storage order. */
-  compareAccounts?(a: SchedulerAccount, b: SchedulerAccount): number;
+  /**
+   * Stable account ordering for tests; default keeps storage order.
+   *
+   * `this: void` documents that it is a plain function - it is read off the
+   * deps object before being handed to `Array#sort`.
+   */
+  compareAccounts?(this: void, a: SchedulerAccount, b: SchedulerAccount): number;
 }
 
 export type TickResult =
@@ -125,7 +130,10 @@ export class ClaimScheduler {
    */
   async tick(): Promise<TickResult> {
     if (this.stopped) return { action: "stopped" };
-    const accounts = [...this.deps.listAccounts()].sort(this.deps.compareAccounts);
+    // Arrow keeps `this` with the deps object; the comparator stays optional,
+    // so without one we fall through to Array#sort's default exactly as before.
+    const compare = this.deps.compareAccounts;
+    const accounts = [...this.deps.listAccounts()].sort(compare ? (a, b) => compare(a, b) : undefined);
 
     let aggregate: TickResult | undefined;
     for (const account of accounts) {

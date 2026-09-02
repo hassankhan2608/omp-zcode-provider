@@ -91,12 +91,12 @@ describe("preview", () => {
     const plans = await client.getPreviews();
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.method).toBe("GET");
-    expect(calls[0]!.url).toBe(
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toBe(
       "https://zcode.z.ai/api/v1/zcode-plan/billing/preview?app_version=3.10.1&platform=linux-x64",
     );
     expect(plans).toHaveLength(1);
-    const plan = plans[0]!;
+    const plan = plans[0];
     expect(plan.planId).toBe("weekend-free-1024");
     expect(plan.name).toBe("Weekend Build");
     expect(plan.entitlements[0]).toMatchObject({
@@ -140,8 +140,8 @@ describe("identity header set", () => {
     await client.claim("weekend-free-1024", { verifyParam: "cap-token", region: "cn-hangzhou" });
 
     expect(seen).toHaveLength(2);
-    expect(seen[0]!.path).toBe("/api/v1/zcode-plan/billing/preview");
-    expect(seen[1]!.path).toBe("/api/v1/zcode-plan/billing/claim");
+    expect(seen[0].path).toBe("/api/v1/zcode-plan/billing/preview");
+    expect(seen[1].path).toBe("/api/v1/zcode-plan/billing/claim");
     for (const entry of seen) {
       // UUID-format device identity is server-required (biz 3001 otherwise).
       expect(entry.deviceMid).toMatch(

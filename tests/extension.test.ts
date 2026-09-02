@@ -48,7 +48,7 @@ async function register(
   const { registrations, pi } = fakePi();
   await createExtension({ loadModels: () => models, discoverModels: async () => models, createOAuth: () => oauthStub })(pi);
   expect(registrations).toHaveLength(1);
-  return registrations[0]!;
+  return registrations[0];
 }
 
 describe("registration", () => {
@@ -155,7 +155,7 @@ describe("streamSimple transport", () => {
       },
     })(pi);
 
-    const streamSimple = registrations[0]!.config.streamSimple!;
+    const streamSimple = registrations[0].config.streamSimple!;
     const context = { messages: [{ role: "user", content: "hi", timestamp: 0 }] } as Parameters<
       NonNullable<ProviderConfig["streamSimple"]>
     >[1];

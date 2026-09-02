@@ -39,7 +39,6 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai";
 import type { ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 import {
   importFromZCodeConfig,
-  ZCODE_PROVIDER_IDS,
   parseStartPlanCredential,
   zcodeConfigPath,
   type ImportedCredential,
@@ -235,14 +234,20 @@ export class ZaiCliLoginFlow implements ZCodeLoginFlow {
         throw new Error("Authorization failed. Please retry /login zcode.");
       }
       if (data?.status !== "pending") {
-        throw new Error(`Z.AI login poll: unexpected status ${String(data?.status ?? "(none)")}`);
+        // `status` is `unknown` on the wire: render it only when it is a string,
+        // otherwise a malformed body would stringify as "[object Object]".
+        const status = typeof data?.status === "string" ? data.status : "(none)";
+        throw new Error(`Z.AI login poll: unexpected status ${status}`);
       }
       await this.sleep(Math.min(intervalMs, Math.max(0, deadlineMs - Date.now())));
     }
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
     this.flow = null;
+    // Nothing to await: this flow owns no server (Bigmodel's does), but the
+    // shared ZCodeLoginFlow contract is async.
+    return Promise.resolve();
   }
 }
 
@@ -488,7 +493,7 @@ function buildLoginOptions(installed: ImportedCredential[], lookupEmail?: EmailL
 function selectLoginOption(answer: string, options: LoginOption[]): LoginOption {
   const trimmed = answer.trim().toLowerCase();
   const numbered = Number.parseInt(trimmed, 10);
-  if (Number.isInteger(numbered) && numbered >= 1 && numbered <= options.length) return options[numbered - 1]!;
+  if (Number.isInteger(numbered) && numbered >= 1 && numbered <= options.length) return options[numbered - 1];
 
   const kind: LoginOption["kind"] | undefined = trimmed.startsWith("i")
     ? "import"
@@ -504,7 +509,7 @@ function selectLoginOption(answer: string, options: LoginOption[]): LoginOption 
   if (trimmed.includes("bigmodel") || trimmed.includes("big")) {
     const wanted = kind ?? "browser";
     const installed = options.find((option) => option.kind === "import" && option.provider === "bigmodel");
-    if (wanted === "import") return installed ?? options[0]!;
+    if (wanted === "import") return installed ?? options[0];
     return {
       kind: wanted,
       provider: "bigmodel",
@@ -512,7 +517,7 @@ function selectLoginOption(answer: string, options: LoginOption[]): LoginOption 
     };
   }
 
-  return (kind !== undefined ? options.find((option) => option.kind === kind) : undefined) ?? options[0]!;
+  return (kind !== undefined ? options.find((option) => option.kind === kind) : undefined) ?? options[0];
 }
 
 /** Resolve a display name for an installed credential's account. */

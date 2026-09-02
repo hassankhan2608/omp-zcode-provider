@@ -283,7 +283,7 @@ function staleOr(cached: UsageReport | undefined, reason: string): UsageReport |
   if (!cached) return null;
   return {
     ...cached,
-    limits: cached.limits.map((limit) => ({ ...limit, status: "unknown" as UsageStatus })),
+    limits: cached.limits.map((limit) => ({ ...limit, status: "unknown" })),
     notes: [...(cached.notes ?? []), `Stale — ${reason}`],
   };
 }

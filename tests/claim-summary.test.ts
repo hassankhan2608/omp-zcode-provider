@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "bun:test";
 import { claimCelebration, mergeCelebrations } from "../src/claim-summary.js";
-import type { ClaimablePlan, ClaimOutcome } from "../src/claim.js";
+import type { ClaimablePlan } from "../src/claim.js";
 
 const PLAN: ClaimablePlan = {
   planId: "zcode-v3-start-plan-0901-2",
@@ -82,8 +82,8 @@ describe("claimCelebration", () => {
       plan: {
         ...PLAN,
         entitlements: [
-          PLAN.entitlements[0]!,
-          { ...PLAN.entitlements[0]!, entitlementId: "e-2", showName: "GLM-5.3", grantUnits: 20_000_000, period: "daily" },
+          PLAN.entitlements[0],
+          { ...PLAN.entitlements[0], entitlementId: "e-2", showName: "GLM-5.3", grantUnits: 20_000_000, period: "daily" },
         ],
       },
       outcome: { ok: true, planId: PLAN.planId },

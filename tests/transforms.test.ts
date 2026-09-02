@@ -30,8 +30,8 @@ describe("start-plan system blocks", () => {
   it("prepends the three official blocks plus the currentModel block", () => {
     const out = apply({ model: "GLM-5.3", messages: [{ role: "user", content: "hi" }] });
     expect(out.system).toHaveLength(4);
-    expect(out.system![0]!.text).toBe("You are ZCode, an interactive coding agent");
-    expect(out.system![3]!.text).toBe("- You are powered by the model named GLM-5.3.");
+    expect(out.system![0].text).toBe("You are ZCode, an interactive coding agent");
+    expect(out.system![3].text).toBe("- You are powered by the model named GLM-5.3.");
     for (const block of out.system!) expect(block.cache_control).toEqual({ type: "ephemeral" });
   });
 
@@ -122,7 +122,7 @@ describe("effortForBudget", () => {
 describe("cache_control", () => {
   it("promotes string content on the last non-system message", () => {
     const out = apply({ model: "GLM-5.3", messages: [{ role: "user", content: "hello" }] });
-    expect(out.messages![0]!.content).toEqual([
+    expect(out.messages![0].content).toEqual([
       { type: "text", text: "hello", cache_control: { type: "ephemeral" } },
     ]);
   });
@@ -132,15 +132,15 @@ describe("cache_control", () => {
       model: "GLM-5.3",
       messages: [{ role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }],
     });
-    const blocks = out.messages![0]!.content as Block[];
-    expect(blocks[0]!.cache_control).toBeUndefined();
-    expect(blocks[1]!.cache_control).toEqual({ type: "ephemeral" });
+    const blocks = out.messages![0].content as Block[];
+    expect(blocks[0].cache_control).toBeUndefined();
+    expect(blocks[1].cache_control).toEqual({ type: "ephemeral" });
   });
 
   it("is idempotent when cache_control is already present", () => {
     const content = [{ type: "text", text: "a", cache_control: { type: "ephemeral" } }];
     const out = apply({ model: "GLM-5.3", messages: [{ role: "user", content }] });
-    expect(out.messages![0]!.content).toEqual(content);
+    expect(out.messages![0].content).toEqual(content);
   });
 
   it("skips trailing system messages", () => {
@@ -151,8 +151,8 @@ describe("cache_control", () => {
         { role: "system", content: "s" },
       ],
     });
-    expect(out.messages![1]!.content).toBe("s");
-    expect(out.messages![0]!.content).toEqual([
+    expect(out.messages![1].content).toBe("s");
+    expect(out.messages![0].content).toEqual([
       { type: "text", text: "u", cache_control: { type: "ephemeral" } },
     ]);
   });

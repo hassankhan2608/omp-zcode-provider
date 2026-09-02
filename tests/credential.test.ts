@@ -90,11 +90,11 @@ describe("importFromZCodeConfig", () => {
     expect(found).toHaveLength(2);
     // Enabled entries sort first so `/login zcode` defaults to what the
     // desktop client is actually using.
-    expect(found[0]!.credential.provider).toBe("zai");
-    expect(found[0]!.enabled).toBe(true);
-    expect(found[0]!.credential.jwt).toBe(zaiToken);
-    expect(found[1]!.credential.provider).toBe("bigmodel");
-    expect(found[1]!.enabled).toBe(false);
+    expect(found[0].credential.provider).toBe("zai");
+    expect(found[0].enabled).toBe(true);
+    expect(found[0].credential.jwt).toBe(zaiToken);
+    expect(found[1].credential.provider).toBe("bigmodel");
+    expect(found[1].enabled).toBe(false);
   });
 
   it("ignores coding-plan keys entirely", () => {
@@ -114,7 +114,7 @@ describe("importFromZCodeConfig", () => {
     });
     const found = importFromZCodeConfig(path);
     expect(found).toHaveLength(1);
-    expect(found[0]!.credential.jwt).toBe(good);
+    expect(found[0].credential.jwt).toBe(good);
   });
 
   it("returns nothing when the config is missing or unreadable", () => {

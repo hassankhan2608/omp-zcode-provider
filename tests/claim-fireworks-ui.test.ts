@@ -142,9 +142,9 @@ describe("showClaimFireworks", () => {
     const h = fakeHost();
     void showClaimFireworks(h.host, MESSAGE);
 
-    expect(h.captured.calls[0]!.cleared).toBe(false);
-    expect(h.captured.calls[0]!.placement).toBe("aboveEditor");
-    expect(h.captured.calls[0]!.rendered.join("\n")).toContain("100,000,000 TOKENS");
+    expect(h.captured.calls[0].cleared).toBe(false);
+    expect(h.captured.calls[0].placement).toBe("aboveEditor");
+    expect(h.captured.calls[0].rendered.join("\n")).toContain("100,000,000 TOKENS");
   });
 
   it("schedules its lifetime on the session timers OMP clears at shutdown", () => {
@@ -165,9 +165,9 @@ describe("showClaimFireworks", () => {
     h.fireTimeout();
     await shown;
 
-    const last = h.captured.calls[h.captured.calls.length - 1]!;
+    const last = h.captured.calls[h.captured.calls.length - 1];
     expect(last.cleared).toBe(true);
-    expect(last.key).toBe(h.captured.calls[0]!.key);
+    expect(last.key).toBe(h.captured.calls[0].key);
     // Both timers released.
     expect(h.captured.cleared).toBeGreaterThanOrEqual(2);
   });
@@ -194,17 +194,17 @@ describe("showClaimFireworks", () => {
 
     h.fireTimeout();
     await second;
-    expect(h.captured.calls[h.captured.calls.length - 1]!.cleared).toBe(true);
+    expect(h.captured.calls[h.captured.calls.length - 1].cleared).toBe(true);
   });
 
   it("survives a stale string payload from a scheduler created before hot reload", async () => {
     const h = fakeHost();
     const stalePayload = "ZCode claim: ZCode Global Build claimed for a@b.dev";
     const shown = showClaimFireworks(h.host, stalePayload);
-    expect(h.captured.calls[0]!.rendered.join("\n")).toContain(stalePayload);
+    expect(h.captured.calls[0].rendered.join("\n")).toContain(stalePayload);
     h.fireTimeout();
     await shown;
-    expect(h.captured.calls[h.captured.calls.length - 1]!.cleared).toBe(true);
+    expect(h.captured.calls[h.captured.calls.length - 1].cleared).toBe(true);
   });
 
   it("never calls the focus-stealing custom UI", () => {

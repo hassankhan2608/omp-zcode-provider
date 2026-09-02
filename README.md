@@ -78,10 +78,10 @@ Set `ZCODE_API_REPO` if your checkout is not at `~/repos/zcode-api`.
 ## Commands
 
 ```bash
-bun test             # 358 tests, no network except the marked live checks
+bun test             # 360 tests, no network except the marked live checks
 bun run typecheck    # tsc --noEmit
-bun run lint         # typed ESLint; findings are advisory, not a gate
 bun run parity       # vendored-file drift check
+bun run lint         # typed ESLint; currently zero findings, keep it that way
 bun run ./solve-probe.ts   # real captcha solves through the persistent worker
 ```
 

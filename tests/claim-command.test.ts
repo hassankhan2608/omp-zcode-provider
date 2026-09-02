@@ -10,6 +10,12 @@ import { createExtension, ZCODE_PROVIDER_ID } from "../src/extension.js";
 import { FALLBACK_MODELS } from "../src/models.js";
 import { resetAccountState } from "../src/account-state.js";
 import { asFetch, type FetchHandler } from "./fetch-stub.js";
+import type { ClaimFireworksTui, FireworksComponent } from "../src/claim-fireworks.js";
+
+/** What ctx.ui.setWidget receives from the celebration path. */
+type WidgetContent = string[] | ((tui: ClaimFireworksTui, theme: unknown) => FireworksComponent) | undefined;
+
+const noopTui: ClaimFireworksTui = { requestRender: () => {} };
 
 const oauthStub: NonNullable<ProviderConfig["oauth"]> = {
   name: "ZCode (Start Plan)",
@@ -23,11 +29,17 @@ interface Registration {
   config: ProviderConfig;
 }
 
+interface LogLine {
+  level: "debug" | "error";
+  message: string;
+}
+
 interface FakePi {
   registrations: Registration[];
   commands: Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> | void }>;
   entries: Array<{ customType: string; data: unknown }>;
   sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void> | void>;
+  logs: LogLine[];
   api: ExtensionAPI;
 }
 
@@ -36,7 +48,13 @@ function fakePi(): FakePi {
   const commands = new Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> | void }>();
   const entries: Array<{ customType: string; data: unknown }> = [];
   const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void> | void> = [];
+  const logs: LogLine[] = [];
   const api = {
+    logger: {
+      debug: (message: string) => logs.push({ level: "debug", message }),
+      error: (message: string) => logs.push({ level: "error", message }),
+      warn: (message: string) => logs.push({ level: "error", message }),
+    },
     registerProvider(name: string, config: ProviderConfig) {
       registrations.push({ name, config });
     },
@@ -50,7 +68,7 @@ function fakePi(): FakePi {
       if (event === "session_start") sessionStartHandlers.push(handler);
     },
   } as unknown as ExtensionAPI;
-  return { registrations, commands, entries, sessionStartHandlers, api };
+  return { registrations, commands, entries, sessionStartHandlers, logs, api };
 }
 
 interface StoredRow {
@@ -155,7 +173,7 @@ let handlerIndex = 0;
 function sequentialFetch(): typeof fetch {
   handlerIndex = 0;
   return asFetch(async (input, init) => {
-    const handler = handlers[Math.min(handlerIndex, handlers.length - 1)]!;
+    const handler = handlers[Math.min(handlerIndex, handlers.length - 1)];
     handlerIndex += 1;
     return handler(input, init);
   });
@@ -171,7 +189,8 @@ afterAll(() => {
   resetAccountState();
 });
 
-function build(rows: StoredRow[], fetchImpl?: typeof fetch): FakePi {
+// `rows` are wired through `fakeCtx`; `build` only needs the transport.
+function build(_rows: StoredRow[], fetchImpl?: typeof fetch): FakePi {
   const fake = fakePi();
   void createExtension({
     loadModels: () => FALLBACK_MODELS,
@@ -318,12 +337,10 @@ describe("/claim command", () => {
       ui: {
         ...ui,
         notify: (message: string) => ui.notifications.push(message),
-        setWidget: (_key: string, content: unknown) => {
+        setWidget: (_key: string, content: WidgetContent) => {
           if (typeof content !== "function") return;
-          const component = content({ requestRender() {} }, {});
-          if (component && typeof component === "object" && "render" in component && typeof component.render === "function") {
-            widgets.push([...component.render(80)].map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, "")));
-          }
+          const rendered = content(noopTui, {}).render(80);
+          widgets.push([...rendered].map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")));
         },
       },
     });
@@ -331,10 +348,38 @@ describe("/claim command", () => {
     // Exactly one card, carrying both accounts - a per-account card would
     // overwrite the earlier one under the shared widget key.
     expect(widgets).toHaveLength(1);
-    const text = widgets[0]!.join("\n");
+    const text = widgets[0].join("\n");
     expect(text).toContain("2 PLANS CLAIMED");
     expect(text).toContain("a@x.dev");
     expect(text).toContain("b@x.dev");
+  });
+
+  it("routes scheduler diagnostics to OMP's file logger, not the terminal", async () => {
+    // console.log writes straight into the TUI's screen buffer and corrupts the
+    // rendered frame; pi.logger is the native sink that lands in
+    // ~/.config/omp/logs and is greppable after the fact.
+    // A failing preview drives the scheduler's error-backoff branch, which is
+    // one of the paths that actually emits a diagnostic.
+    handlers = [async () => new Response("boom", { status: 500 })];
+    const row = activeRow(1, "a@x.dev", "u-1");
+    const fake = build([row], sequentialFetch());
+    const settled = Promise.withResolvers<void>();
+
+    for (const handler of fake.sessionStartHandlers) {
+      void handler({}, {
+        hasUI: false,
+        modelRegistry: { authStorage: authStorageWith([row]) },
+        setInterval: () => 0 as unknown as NodeJS.Timeout,
+        setTimeout: () => 0 as unknown as NodeJS.Timeout,
+        clearTimer: () => {},
+        ui: { notify: () => {}, setWidget: () => {} },
+      });
+    }
+    setTimeout(settled.resolve, 50);
+    await settled.promise;
+
+    expect(fake.logs.length).toBeGreaterThan(0);
+    expect(fake.logs.some((line) => line.message.includes("[claim]"))).toBe(true);
   });
 });
 
@@ -445,12 +490,9 @@ describe("auto-claim scheduler wiring", () => {
       clearTimer: () => {},
       ui: {
         notify: () => {},
-        setWidget: (_key: string, content: unknown) => {
+        setWidget: (_key: string, content: WidgetContent) => {
           if (typeof content !== "function") return;
-          const component = content({ requestRender() {} }, {});
-          if (component && typeof component === "object" && "render" in component && typeof component.render === "function") {
-            rendered.push(...component.render(80));
-          }
+          rendered.push(...content(noopTui, {}).render(80));
           widgetShown.resolve();
         },
       },

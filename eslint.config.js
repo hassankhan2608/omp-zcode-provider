@@ -16,17 +16,31 @@ import tseslint from "typescript-eslint";
  * untracked. `.ts` would drag in `jiti` for config loading; this file is ESM
  * already because package.json sets `"type": "module"`.
  *
- * Existing findings are NOT treated as a release gate. Most of them live in
- * test doubles (deliberate non-null assertions on fixture data). Fixing them is
- * separate cleanup, tracked apart from this tooling, so that adding the linter
- * never rewrites hundreds of lines of otherwise-green tests.
+ * `bun run lint` is clean and is expected to stay clean. Where a rule is turned
+ * off below, the reason is recorded inline - either the pattern is correct for
+ * this codebase (ANSI control chars, `!` on checked indices) or the rule is
+ * wrong about this runtime (bun:test's `expect().rejects` typing).
  */
 export default defineConfig(
-  // `src/captcha-happy.ts` and `src/captcha-worker.ts` are kept byte-identical
-  // to zcode-api (they carry upstream's `@ts-nocheck`). Linting them would
-  // create diff noise against upstream and make the next sync harder, which
-  // costs more than the findings are worth.
-  globalIgnores(["src/captcha-happy.ts", "src/captcha-worker.ts"]),
+  // Every file vendored from zcode-api, plus the worker that only wraps it.
+  // They are kept byte-identical to upstream (and carry upstream's
+  // `@ts-nocheck`), so linting them would create diff noise against the next
+  // sync - which costs far more than the findings are worth.
+  //
+  // This list MUST match `VENDORED_FILES` in `upstream-parity.ts`; a test in
+  // `tests/upstream-parity.test.ts` fails if the two ever drift.
+  globalIgnores([
+    "src/captcha-happy.ts",
+    "src/captcha.ts",
+    "src/captcha-pool.ts",
+    "src/captcha-token.ts",
+    "src/captcha-cpu-governor.ts",
+    "src/captcha-worker.ts",
+    "tests/captcha-happy.test.ts",
+    "tests/captcha-pool.test.ts",
+    "tests/captcha-token.test.ts",
+    "tests/captcha-cpu-governor.test.ts",
+  ]),
 
   {
     files: ["**/*.ts", "**/*.js"],
@@ -42,7 +56,10 @@ export default defineConfig(
       "@typescript-eslint/consistent-type-imports": ["error", { fixStyle: "separate-type-imports" }],
       // Async claim/captcha paths must never drop a rejection.
       "@typescript-eslint/no-floating-promises": "error",
-      "@typescript-eslint/switch-exhaustiveness-check": "error",
+      // A `default:` branch genuinely covers the rest (every remaining
+      // NodeJS.Platform, an absent effort level), so listing 13 union members
+      // would add noise rather than safety.
+      "@typescript-eslint/switch-exhaustiveness-check": ["error", { considerDefaultExhaustiveForUnions: true }],
       // Dead locals, params, imports, and caught errors are cleanup debt.
       "@typescript-eslint/no-unused-vars": [
         "error",
@@ -63,12 +80,16 @@ export default defineConfig(
   },
 
   {
-    // Test doubles legitimately match async signatures without awaiting, and
-    // pass bare method references into fakes.
     files: ["tests/**/*.ts", "live-zcode.ts", "solve-probe.ts"],
     rules: {
+      // Test doubles legitimately match async signatures without awaiting, and
+      // pass bare method references into fakes.
       "@typescript-eslint/require-await": "off",
       "@typescript-eslint/unbound-method": "off",
+      // `await expect(...).rejects.toThrow()` is the documented bun:test API,
+      // but @types/bun declares those matchers as returning `void`, so the rule
+      // reports every one of them. Awaiting is correct here; the types are not.
+      "@typescript-eslint/await-thenable": "off",
     },
   },
 

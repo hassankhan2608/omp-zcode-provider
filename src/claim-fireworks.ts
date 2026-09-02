@@ -98,16 +98,18 @@ export async function showClaimFireworks(
   activeCelebrations.get(host)?.finish();
 
   const { promise, resolve } = Promise.withResolvers<void>();
-  let pump: FireworksTimer | undefined;
-  let timeout: FireworksTimer | undefined;
+  // One mutable record instead of two `let`s: the handles are assigned after
+  // `finish()` closes over them (the widget factory supplies the pump), and a
+  // record keeps that intent obvious.
+  const timers: { pump?: FireworksTimer; retire?: FireworksTimer } = {};
   let finished = false;
 
   const state: ActiveCelebration = {
     finish(): void {
       if (finished) return;
       finished = true;
-      if (pump !== undefined) host.clearTimer(pump);
-      if (timeout !== undefined) host.clearTimer(timeout);
+      if (timers.pump !== undefined) host.clearTimer(timers.pump);
+      if (timers.retire !== undefined) host.clearTimer(timers.retire);
       if (activeCelebrations.get(host) === state) {
         activeCelebrations.delete(host);
         host.ui.setWidget(FIREWORKS_WIDGET_KEY, undefined);
@@ -121,13 +123,15 @@ export async function showClaimFireworks(
     FIREWORKS_WIDGET_KEY,
     (tui) => {
       const component = createFireworksComponent(card);
-      pump = host.setInterval(() => tui.requestRender(), 1000 / FPS);
+      timers.pump = host.setInterval(() => tui.requestRender(), 1000 / FPS);
       return component;
     },
     { placement: "aboveEditor" },
   );
 
-  timeout = host.setTimeout(state.finish, options.durationMs ?? DEFAULT_DURATION_MS);
+  // Arrow, not `state.finish` directly: passing a method reference would let
+  // the host decide `this`.
+  timers.retire = host.setTimeout(() => state.finish(), options.durationMs ?? DEFAULT_DURATION_MS);
   await promise;
 }
 
@@ -204,10 +208,10 @@ export function fireworksFrame(tick: number, width: number, seed: number): strin
     for (let b = 0; b < bursts; b++) {
       const cx = Math.floor(random() * width);
       const cy = Math.floor(random() * sky);
-      const color = PALETTE[(launch + b) % PALETTE.length]!;
-      const glyph = BURST_GLYPHS[Math.min(age, BURST_GLYPHS.length - 1)]!;
+      const color = PALETTE[(launch + b) % PALETTE.length];
+      const glyph = BURST_GLYPHS[Math.min(age, BURST_GLYPHS.length - 1)];
       const radius = age;
-      const row = canvas[cy]!;
+      const row = canvas[cy];
       const spark = `${color}${glyph}`;
       if (radius === 0) {
         if (cx >= 0 && cx < width) row[cx] = spark;
@@ -220,7 +224,7 @@ export function fireworksFrame(tick: number, width: number, seed: number): strin
       // A shorter vertical pair gives the burst some body without filling it.
       const vertical = Math.max(1, Math.floor(radius / 2));
       for (const y of [cy - vertical, cy + vertical]) {
-        if (y >= 0 && y < sky && cx >= 0 && cx < width) canvas[y]![cx] = spark;
+        if (y >= 0 && y < sky && cx >= 0 && cx < width) canvas[y][cx] = spark;
       }
     }
   }

@@ -71,10 +71,10 @@ export function decodeJwtPayload(token: string): JwtPayload | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   try {
-    const json = Buffer.from(parts[1]!, "base64url").toString("utf-8");
+    const json = Buffer.from(parts[1], "base64url").toString("utf-8");
     const parsed: unknown = JSON.parse(json);
     if (typeof parsed !== "object" || parsed === null) return null;
-    return parsed as JwtPayload;
+    return parsed;
   } catch {
     return null;
   }
@@ -139,6 +139,14 @@ export interface ImportedCredential {
  * the desktop client actually holds. Enabled entries sort first; entries
  * without a decodable JWT are skipped rather than failing the whole import.
  */
+/**
+ * The slice of ZCode's `config.json` this importer reads. Values stay `unknown`
+ * because a hand-edited config can hold anything; each one is validated below.
+ */
+interface ZCodeConfigFile {
+  provider?: Record<string, { options?: { apiKey?: unknown }; enabled?: unknown } | undefined>;
+}
+
 export function importFromZCodeConfig(configPath: string = zcodeConfigPath()): ImportedCredential[] {
   let raw: string;
   try {
@@ -147,9 +155,12 @@ export function importFromZCodeConfig(configPath: string = zcodeConfigPath()): I
     return [];
   }
 
-  let parsed: { provider?: Record<string, { options?: { apiKey?: unknown }; enabled?: unknown }> };
+  // Boundary assert against the named shape above: `JSON.parse` is `any`, and
+  // every field this function goes on to read is validated (`stringField`,
+  // `=== true`), so nothing unchecked escapes.
+  let parsed: ZCodeConfigFile;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw) as ZCodeConfigFile;
   } catch {
     return [];
   }

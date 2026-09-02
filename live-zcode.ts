@@ -17,17 +17,17 @@ const cred = override
   : (() => {
       const installed = importFromZCodeConfig();
       if (installed.length === 0) throw new Error("no installed ZCode Start Plan credential");
-      return installed[0]!.credential;
+      return installed[0].credential;
     })();
 console.log(`credential: provider=${cred.provider} account=${cred.userId}`);
 
 const models = await resolveStartPlanModels();
 console.log(`catalog: ${models.map((m) => `${m.id}(ctx=${m.contextWindow},out=${m.maxTokens})`).join(", ")}`);
-const model = models[0]!.id;
+const model = models[0].id;
 
 const report = await zcodeUsageProvider.fetchUsage(
   { provider: "zcode", credential: { type: "oauth", accessToken: cred.jwt, accountId: cred.userId } },
-  { fetch: globalThis.fetch as never },
+  { fetch: globalThis.fetch },
 );
 console.log(
   `usage: ${
@@ -62,7 +62,7 @@ let text = "";
 const decoder = new TextDecoder();
 
 for await (const chunk of response.body!) {
-  const frame = decoder.decode(chunk as Uint8Array, { stream: true });
+  const frame = decoder.decode(chunk, { stream: true });
   for (const line of frame.split("\n")) {
     if (!line.startsWith("data:")) continue;
     try {
@@ -78,5 +78,5 @@ for await (const chunk of response.body!) {
     }
   }
 }
-console.log(`streamed text: ${JSON.stringify(text)}`);
+console.log(`streamed text: ${JSON.stringify(text)} (${Date.now() - t0}ms)`);
 process.exit(text.length > 0 ? 0 : 1);

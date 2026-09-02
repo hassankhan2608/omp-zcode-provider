@@ -29,7 +29,7 @@ function fakeWorker(): FakeWorker {
     sent: [],
     terminated: 0,
     postMessage(message) {
-      worker.sent.push(message as FakeWorker["sent"][number]);
+      worker.sent.push(message);
     },
     on(event, listener) {
       (listeners[event] ??= []).push(listener as (payload: unknown) => void);
@@ -85,9 +85,9 @@ describe("createCaptchaSolver", () => {
     const second = h.solver.solve("scene", "cn", "prefix");
 
     expect(h.workers).toHaveLength(1);
-    const [a, b] = h.workers[0]!.sent;
-    h.workers[0]!.emit("message", { id: a!.id, ok: true, token: "token-a" });
-    h.workers[0]!.emit("message", { id: b!.id, ok: true, token: "token-b" });
+    const [a, b] = h.workers[0].sent;
+    h.workers[0].emit("message", { id: a.id, ok: true, token: "token-a" });
+    h.workers[0].emit("message", { id: b.id, ok: true, token: "token-b" });
 
     expect(await first).toBe("token-a");
     expect(await second).toBe("token-b");
@@ -99,7 +99,7 @@ describe("createCaptchaSolver", () => {
     h.timers.fire();
 
     await expect(attempt).rejects.toThrow(/timed out after 90000ms/);
-    expect(h.workers[0]!.terminated).toBe(1);
+    expect(h.workers[0].terminated).toBe(1);
   });
 
   it("fails the other solves queued behind a stall, because they share that worker", async () => {
@@ -120,18 +120,18 @@ describe("createCaptchaSolver", () => {
 
     const next = h.solver.solve("scene", "cn", "prefix");
     expect(h.workers).toHaveLength(2);
-    const sent = h.workers[1]!.sent[0]!;
-    h.workers[1]!.emit("message", { id: sent.id, ok: true, token: "fresh" });
+    const sent = h.workers[1].sent[0];
+    h.workers[1].emit("message", { id: sent.id, ok: true, token: "fresh" });
     expect(await next).toBe("fresh");
   });
 
   it("rejects pending solves when the worker crashes and recovers on the next call", async () => {
     const h = harness();
     const attempt = h.solver.solve("scene", "cn", "prefix");
-    h.workers[0]!.emit("error", new Error("boom"));
+    h.workers[0].emit("error", new Error("boom"));
 
     await expect(attempt).rejects.toThrow(/captcha worker failed: boom/);
-    h.solver.solve("scene", "cn", "prefix");
+    void h.solver.solve("scene", "cn", "prefix");
     expect(h.workers).toHaveLength(2);
   });
 
@@ -148,6 +148,6 @@ describe("createCaptchaSolver", () => {
     h.solver.shutdown();
 
     await expect(attempt).rejects.toThrow(/shut down/);
-    expect(h.workers[0]!.terminated).toBe(1);
+    expect(h.workers[0].terminated).toBe(1);
   });
 });

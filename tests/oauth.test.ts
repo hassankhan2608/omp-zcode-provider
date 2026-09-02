@@ -90,10 +90,10 @@ describe("Z.AI CLI login flow", () => {
     const flow = new ZaiCliLoginFlow(fetchImpl, noSleep);
     const started = await flow.start();
 
-    expect(calls[0]!.url).toBe("https://zcode.z.ai/api/v1/oauth/cli/init");
-    expect(calls[0]!.method).toBe("POST");
-    expect(calls[0]!.auth).toMatch(/^Bearer [0-9a-f]{64}$/);
-    expect(JSON.parse(calls[0]!.body)).toEqual({ provider: "zai" });
+    expect(calls[0].url).toBe("https://zcode.z.ai/api/v1/oauth/cli/init");
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].auth).toMatch(/^Bearer [0-9a-f]{64}$/);
+    expect(JSON.parse(calls[0].body)).toEqual({ provider: "zai" });
     // The authorize URL is server-built; the client must never synthesize one.
     expect(started.authorizeUrl).toBe("https://chat.z.ai/x");
     expect(started.callbackUrl).toBe("");
@@ -137,10 +137,10 @@ describe("Z.AI CLI login flow", () => {
     const credential = await flow.complete(started, 60_000);
 
     expect(polls).toBe(3);
-    expect(calls[1]!.url).toBe("https://zcode.z.ai/api/v1/oauth/cli/poll/f-1");
-    expect(calls[1]!.method).toBe("GET");
+    expect(calls[1].url).toBe("https://zcode.z.ai/api/v1/oauth/cli/poll/f-1");
+    expect(calls[1].method).toBe("GET");
     // Poll re-sends the same client bearer token that init used.
-    expect(calls[1]!.auth).toBe(calls[0]!.auth);
+    expect(calls[1].auth).toBe(calls[0].auth);
     expect(credential).toEqual({
       jwt: PLAN_JWT,
       provider: "zai",
@@ -233,8 +233,8 @@ describe("Bigmodel auth-code flow", () => {
       await fetch(`${started.callbackUrl}?authCode=code-1&state=${started.state}`);
       const credential = await pending;
 
-      expect(calls[0]!.url).toBe("https://zcode.z.ai/api/v1/oauth/token");
-      expect(JSON.parse(calls[0]!.body)).toEqual({
+      expect(calls[0].url).toBe("https://zcode.z.ai/api/v1/oauth/token");
+      expect(JSON.parse(calls[0].body)).toEqual({
         provider: "bigmodel",
         code: "code-1",
         redirect_uri: started.callbackUrl,
@@ -330,9 +330,18 @@ describe("toOAuthCredentials", () => {
   });
 });
 
+/** Reads `user_id` out of a test JWT without leaking `any` from JSON.parse. */
+function jwtUserId(token: string): string {
+  const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString()) as { user_id: string };
+  return payload.user_id;
+}
+
 describe("account identity across repeated logins", () => {
   const installedFor = (token: string, provider: "zai" | "bigmodel" = "zai"): ImportedCredential[] => [
-    { credential: { jwt: token, provider, userId: JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()).user_id, issuedAt: 1 }, enabled: true },
+    {
+      credential: { jwt: token, provider, userId: jwtUserId(token), issuedAt: 1 },
+      enabled: true,
+    },
   ];
 
   async function login(installed: ImportedCredential[], answers: string[]): Promise<OAuthCredentials> {
@@ -380,7 +389,7 @@ describe("login menu", () => {
     const cb = callbacks(["1"]);
     await oauth.login(cb);
 
-    const menu = cb.prompts[0]!;
+    const menu = cb.prompts[0];
     const numbered = menu.split("\n").filter((line) => /^\d+\)/.test(line.trim()));
     expect(numbered[0]).toMatch(/^1\) browser/);
     expect(numbered.map((line) => Number(line.trim().split(")")[0]))).toEqual(
@@ -396,14 +405,14 @@ describe("login menu", () => {
     });
     const cb = callbacks(["import"]);
     await oauth.login(cb);
-    expect(cb.prompts[0]!).toContain("a@b.dev");
+    expect(cb.prompts[0]).toContain("a@b.dev");
   });
 
   it("falls back to the account id when no stored email matches", async () => {
     const oauth = createZCodeOAuth({ readInstalled: installed, now: () => 1_000 });
     const cb = callbacks(["import"]);
     await oauth.login(cb);
-    expect(cb.prompts[0]!).toContain("u-live");
+    expect(cb.prompts[0]).toContain("u-live");
   });
 
   it("never asks a follow-up question for a browser login", async () => {
@@ -420,7 +429,7 @@ describe("login menu", () => {
     const cb = callbacks(["1"]);
     await oauth.login(cb);
 
-    const menu = cb.prompts[0]!;
+    const menu = cb.prompts[0];
     expect(menu).toMatch(/^1\) browser/m);
     expect(menu).not.toContain("bigmodel");
     expect(menu.split("\n").filter((line) => /^\d+\)/.test(line))).toHaveLength(3);
