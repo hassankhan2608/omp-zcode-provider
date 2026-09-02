@@ -106,6 +106,35 @@ describe("ClaimScheduler single-account upstream semantics", () => {
     expect(await h.scheduler.tick()).toEqual({ action: "skipped_hold" });
   });
 
+  it("stays stopped while the rejected credential is still the stored one", async () => {
+    const h = makeHarness();
+    h.primary.plans = [{ planId: "p", name: "P", description: "", priority: 1, entitlements: [] }];
+    h.primary.claimOutcome = { ok: false, planId: "p", failureKind: "login_required", code: 401, message: "expired" };
+    await h.scheduler.tick();
+
+    h.primary.claimCalls.length = 0;
+    expect(await h.scheduler.tick()).toEqual({ action: "stopped" });
+    expect(h.primary.claimCalls).toEqual([]);
+  });
+
+  it("resumes automatically once a fresh login stores a different credential", async () => {
+    // The scheduler cannot observe /login, but a fresh login rotates the
+    // account's JWT. Keying the stop on the rejected JWT makes re-login
+    // self-healing instead of needing an explicit resume call nobody makes.
+    const h = makeHarness();
+    h.primary.plans = [{ planId: "p", name: "P", description: "", priority: 1, entitlements: [] }];
+    h.primary.claimOutcome = { ok: false, planId: "p", failureKind: "login_required", code: 401, message: "expired" };
+    await h.scheduler.tick();
+    expect(await h.scheduler.tick()).toEqual({ action: "stopped" });
+
+    h.accounts[0] = { jwt: "jwt-after-relogin", accountId: "acc-1", email: "a@x.dev" };
+    h.primary.claimOutcome = { ok: true, planId: "p" };
+    h.primary.claimCalls.length = 0;
+
+    expect(await h.scheduler.tick()).toEqual({ action: "claimed", planId: "p", startsAt: undefined, endsAt: undefined });
+    expect(h.primary.claimCalls).toHaveLength(1);
+  });
+
   it("reports the exact account, plan, and outcome after a successful auto-claim", async () => {
     const h = makeHarness();
     const plan: ClaimablePlan = {

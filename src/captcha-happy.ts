@@ -629,15 +629,15 @@ function installNativeToString(w) {
         mask(desc.get);
         try {
           const v = desc.get.call(obj);
-          if (typeof v === "function") {
-            mask(v);
-          } else if (v && typeof v.then === "function") {
-            // OMP loads pi-ai stream globals into the host realm. Some stream
-            // prototype getters return an already-rejected Promise when read
-            // without a real instance; claim it before worker teardown.
-            v.then(undefined, () => {});
-          }
-        } catch {}
+          if (typeof v === "function") mask(v);
+          // OMP-ONLY: pi-ai stream globals live in the host realm and some of
+          // their prototype getters return an already-rejected Promise when read
+          // without an instance. Claim it or the isolated captcha worker dies on
+          // an unhandled rejection during teardown. Deliberately one added line
+          // so this file stays a line-for-line copy of upstream (see
+          // upstream-parity.ts); upstream's own style is kept for the same reason.
+          else if (v && typeof v.then === "function") v.then(undefined, () => {});
+        } catch (_) {}
       }
       if (depth < 3) {
         try {

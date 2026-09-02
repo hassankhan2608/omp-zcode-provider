@@ -68,8 +68,15 @@ export type TickResult =
 export class ClaimScheduler {
   private stopped = false;
   private readonly holdUntil = new Map<string, number>();
-  /** Accounts that hit login_required and must not be retried until /login. */
-  private readonly stoppedAccounts = new Set<string>();
+  /**
+   * Accounts stopped by `login_required`, keyed by the JWT that was rejected.
+   *
+   * Upstream keeps such an account stopped until the operator re-authenticates.
+   * Storing the rejected credential instead of a bare account id is what makes
+   * that self-healing here: a fresh `/login zcode` rotates the JWT, and the
+   * next tick sees a credential it never rejected.
+   */
+  private readonly stoppedCredentials = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
@@ -137,7 +144,17 @@ export class ClaimScheduler {
 
   private async tickAccount(account: SchedulerAccount): Promise<TickResult> {
     if (this.stopped) return { action: "stopped" };
-    if (this.stoppedAccounts.has(account.accountId)) return { action: "stopped" };
+    // Stopped by login_required, and the same credential is still stored: a
+    // retry would just fail again. A different JWT means the operator logged
+    // in since, so the stop clears itself - the scheduler has no hook into
+    // /login, and an explicit resume call nobody makes would strand it.
+    if (this.stoppedCredentials.get(account.accountId) === account.jwt) return { action: "stopped" };
+    if (this.stoppedCredentials.delete(account.accountId)) {
+      // Same semantics as upstream's manual resume: a re-login clears the
+      // login_required cooldown too, so the operator gets an attempt now
+      // instead of waiting out a backoff that a new credential invalidated.
+      this.holdUntil.delete(account.accountId);
+    }
     const nowMs = this.now();
     const holdUntil = this.holdUntil.get(account.accountId) ?? 0;
     if (nowMs < holdUntil) return { action: "skipped_hold" };
@@ -200,21 +217,16 @@ export class ClaimScheduler {
     const message = `ZCode claim: ${outcome.failureKind} (${outcome.code}) — ${outcome.message}; retry in ${Math.round(holdMs / 1000)}s`;
     this.log(message);
     if (outcome.failureKind === "login_required") {
-      this.stoppedAccounts.add(account.accountId);
+      this.stoppedCredentials.set(account.accountId, account.jwt);
       this.notify(`ZCode claim stopped for ${account.email ?? account.accountId}: re-login required (/login zcode)`);
     }
     return { action: "failed", outcome, holdMs };
   }
 
-  /** Resume an account stopped by login_required after a fresh /login. */
-  resumeAccount(accountId: string): void {
-    this.stoppedAccounts.delete(accountId);
-    this.holdUntil.delete(accountId);
-  }
-
   private hold(account: SchedulerAccount, ms: number): void {
     this.holdUntil.set(account.accountId, this.now() + ms);
   }
+
 
   private holdForFailure(
     kind: Extract<ClaimOutcome, { ok: false }>["failureKind"],
@@ -246,7 +258,3 @@ export class ClaimScheduler {
   }
 }
 
-/** Clear a login-required stop so a fresh /login resumes the account. */
-export function resumeAccount(scheduler: ClaimScheduler, accountId: string): void {
-  scheduler.resumeAccount(accountId);
-}

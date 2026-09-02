@@ -331,6 +331,49 @@ describe("auto-claim scheduler wiring", () => {
     }
   });
 
+  it("skips an interval tick while the previous one is still running", async () => {
+    // A multi-account tick can outlive the 5-minute cadence (each account may
+    // mint a captcha). Without a guard the second tick would preview and claim
+    // the same plans concurrently.
+    const firstPreview = Promise.withResolvers<void>();
+    const releasePreview = Promise.withResolvers<void>();
+    let previews = 0;
+    handlers = [
+      async () => {
+        previews += 1;
+        firstPreview.resolve();
+        await releasePreview.promise;
+        return jsonResponse({ code: 0, data: { plans: [] } });
+      },
+      async () => {
+        previews += 1;
+        return jsonResponse({ code: 0, data: { plans: [] } });
+      },
+    ];
+    const row = activeRow(1, "a@x.dev", "u-1");
+    const fake = build([row], sequentialFetch());
+    const ticks: Array<() => void> = [];
+    const ctx = {
+      hasUI: false,
+      modelRegistry: { authStorage: authStorageWith([row]) },
+      setInterval: (callback: () => void) => {
+        ticks.push(callback);
+        return 0 as unknown as NodeJS.Timeout;
+      },
+      ui: { notify: () => {} },
+    };
+
+    for (const handler of fake.sessionStartHandlers) void handler({}, ctx);
+    await firstPreview.promise;
+    // Fire the interval while the session-start tick is still in flight.
+    for (const tick of ticks) tick();
+    releasePreview.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(previews).toBe(1);
+  });
+
   it("immediately auto-claims on session start and shows the rich fireworks card", async () => {
     let claimPosts = 0;
     const claimSeen = Promise.withResolvers<void>();

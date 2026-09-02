@@ -299,10 +299,23 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
         void showClaimFireworks(ctx, celebration);
       },
     });
+    // Single-flight: one tick previews and possibly claims for every stored
+    // account, and each claim mints a captcha, so a tick can outlive the poll
+    // interval. Re-entering would duplicate previews and claim attempts, so a
+    // late tick is dropped rather than queued - the next interval is only
+    // minutes away and the plan list is re-read every time anyway.
+    let running = false;
     const runTick = (): void => {
-      void scheduler.tick().catch((error: unknown) => {
-        console.error(`[claim] scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      if (running) return;
+      running = true;
+      void scheduler
+        .tick()
+        .catch((error: unknown) => {
+          console.error(`[claim] scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
+        })
+        .finally(() => {
+          running = false;
+        });
     };
     // Check now, then keep the five-minute poll cadence. A user should not
     // need to leave OMP open for one full interval or run /claim manually.
