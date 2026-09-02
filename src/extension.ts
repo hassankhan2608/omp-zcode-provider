@@ -291,6 +291,12 @@ function wireClaimFeature(pi: ExtensionAPI, deps: ExtensionDependencies): void {
 
   pi.on("session_start", (_event, ctx) => {
     if (autoClaimDisabled()) return;
+    // A task/reviewer/fork is a real OMP session too, but its header points at
+    // the parent. Starting the scheduler there creates an N×accounts preview
+    // burst (the observed HTTP 429 storm). Automatic claiming belongs to the
+    // root interactive TUI, where its celebration is visible; `/claim` remains
+    // the explicit trigger in print/RPC/JSON modes.
+    if (ctx.mode !== "tui" || ctx.sessionManager.getHeader()?.parentSession) return;
     const scheduler = new ClaimScheduler({
       listAccounts: () => storedAccounts(ctx.modelRegistry),
       createClient: (account) => createClaimClient({ account, fetchImpl: deps.fetchImpl }),

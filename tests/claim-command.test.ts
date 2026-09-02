@@ -367,7 +367,9 @@ describe("/claim command", () => {
 
     for (const handler of fake.sessionStartHandlers) {
       void handler({}, {
-        hasUI: false,
+        mode: "tui",
+        hasUI: true,
+        sessionManager: { getHeader: () => null },
         modelRegistry: { authStorage: authStorageWith([row]) },
         setInterval: () => 0 as unknown as NodeJS.Timeout,
         setTimeout: () => 0 as unknown as NodeJS.Timeout,
@@ -386,7 +388,9 @@ describe("/claim command", () => {
 describe("auto-claim scheduler wiring", () => {
   function sessionCtx(rows: StoredRow[], intervals: number[]): unknown {
     return {
-      hasUI: false,
+      mode: "tui",
+      hasUI: true,
+      sessionManager: { getHeader: () => null },
       modelRegistry: { authStorage: authStorageWith(rows) },
       setInterval: (_callback: () => void, ms: number) => {
         intervals.push(ms);
@@ -395,7 +399,6 @@ describe("auto-claim scheduler wiring", () => {
       ui: { notify: () => {} },
     };
   }
-
   it("starts a contained 5-minute interval on session_start by default", () => {
     const fake = build([activeRow(1, "a@x.dev", "u-1")]);
     const intervals: number[] = [];
@@ -440,7 +443,9 @@ describe("auto-claim scheduler wiring", () => {
     const fake = build([row], sequentialFetch());
     const ticks: Array<() => void> = [];
     const ctx = {
-      hasUI: false,
+      mode: "tui",
+      hasUI: true,
+      sessionManager: { getHeader: () => null },
       modelRegistry: { authStorage: authStorageWith([row]) },
       setInterval: (callback: () => void) => {
         ticks.push(callback);
@@ -451,13 +456,77 @@ describe("auto-claim scheduler wiring", () => {
 
     for (const handler of fake.sessionStartHandlers) void handler({}, ctx);
     await firstPreview.promise;
-    // Fire the interval while the session-start tick is still in flight.
     for (const tick of ticks) tick();
     releasePreview.resolve();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(previews).toBe(1);
+  });
+
+  it("never starts auto-claim in a child/subagent session", () => {
+    // Every task/reviewer is an OMP session too. Its header carries
+    // `parentSession`; running the scheduler there makes N workers each preview
+    // every account at once (the observed 429 storm).
+    let previews = 0;
+    handlers = [
+      async () => {
+        previews += 1;
+        return jsonResponse({ code: 0, data: { plans: [] } });
+      },
+    ];
+    const row = activeRow(1, "a@x.dev", "u-1");
+    const fake = build([row], sequentialFetch());
+    const intervals: number[] = [];
+    const ctx = {
+      mode: "tui",
+      hasUI: true,
+      sessionManager: { getHeader: () => ({ parentSession: "/root/session.jsonl" }) },
+      modelRegistry: { authStorage: authStorageWith([row]) },
+      setInterval: (_callback: () => void, ms: number) => {
+        intervals.push(ms);
+        return 0 as unknown as NodeJS.Timeout;
+      },
+      setTimeout: () => 0 as unknown as NodeJS.Timeout,
+      clearTimer: () => {},
+      ui: { notify: () => {}, setWidget: () => {} },
+    };
+
+    for (const handler of fake.sessionStartHandlers) void handler({}, ctx);
+
+    expect(intervals).toEqual([]);
+    expect(previews).toBe(0);
+  });
+
+  it("never starts auto-claim in print/RPC sessions", () => {
+    // `/claim` remains the explicit trigger there. Automatic polling belongs
+    // to the root TUI where a celebration can actually be shown.
+    let previews = 0;
+    handlers = [
+      async () => {
+        previews += 1;
+        return jsonResponse({ code: 0, data: { plans: [] } });
+      },
+    ];
+    const row = activeRow(1, "a@x.dev", "u-1");
+    const fake = build([row], sequentialFetch());
+    const intervals: number[] = [];
+    const ctx = {
+      mode: "print",
+      hasUI: false,
+      sessionManager: { getHeader: () => null },
+      modelRegistry: { authStorage: authStorageWith([row]) },
+      setInterval: (_callback: () => void, ms: number) => {
+        intervals.push(ms);
+        return 0 as unknown as NodeJS.Timeout;
+      },
+      ui: { notify: () => {} },
+    };
+
+    for (const handler of fake.sessionStartHandlers) void handler({}, ctx);
+
+    expect(intervals).toEqual([]);
+    expect(previews).toBe(0);
   });
 
   it("immediately auto-claims on session start and shows the rich fireworks card", async () => {
@@ -479,6 +548,7 @@ describe("auto-claim scheduler wiring", () => {
     const ctx = {
       mode: "tui",
       hasUI: true,
+      sessionManager: { getHeader: () => null },
       modelRegistry: { authStorage: authStorageWith([row]) },
       // The scheduler's poll cadence; the celebration also uses ctx timers, so
       // both interval kinds land here and only the cadence is asserted.
