@@ -7,9 +7,11 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
+  ClaimPreviewError,
   classifyClaimCode,
   createClaimClient,
   highestPriorityPlan,
+  parseRetryAfterMs,
   selectClaimTarget,
 } from "../src/claim.js";
 import { accountState, resetAccountState } from "../src/account-state.js";
@@ -117,6 +119,30 @@ describe("preview", () => {
     } catch (error) {
       expect((error as Error).name).toBe("ClaimPreviewError");
       expect((error as Error).message).toContain("3001");
+    }
+  });
+
+  it("preserves Retry-After seconds from a 429 so the scheduler can honour it", async () => {
+    const { fetchImpl } = recorder(async () => new Response("HTTP 429", { status: 429, headers: { "retry-after": "120" } }));
+    const client = createClaimClient({ account: { jwt: JWT, accountId: ACCOUNT }, fetchImpl });
+    try {
+      await client.getPreviews();
+      throw new Error("expected rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ClaimPreviewError);
+      expect((error as ClaimPreviewError).status).toBe(429);
+      expect((error as ClaimPreviewError).retryAfterMs).toBe(120_000);
+    }
+  });
+
+  it("leaves retryAfterMs unset when the gateway sends no Retry-After", async () => {
+    const { fetchImpl } = recorder(async () => new Response("HTTP 429", { status: 429 }));
+    const client = createClaimClient({ account: { jwt: JWT, accountId: ACCOUNT }, fetchImpl });
+    try {
+      await client.getPreviews();
+      throw new Error("expected rejection");
+    } catch (error) {
+      expect((error as ClaimPreviewError).retryAfterMs).toBeUndefined();
     }
   });
 });
@@ -266,5 +292,32 @@ describe("classification and selection helpers", () => {
     expect(selectClaimTarget(plans)?.planId).toBe("high");
     expect(selectClaimTarget(plans, "low")?.planId).toBe("low");
     expect(selectClaimTarget(plans, "missing")).toBeUndefined();
+  });
+});
+
+describe("parseRetryAfterMs", () => {
+  // RFC 9110 allows both forms; the ZCode gateway has been observed sending
+  // neither, so "absent/garbage → undefined" is the load-bearing case: the
+  // scheduler then falls back to its own cooldown instead of a bogus 0ms.
+  it("reads delay-seconds", () => {
+    expect(parseRetryAfterMs("30", 1_000)).toBe(30_000);
+  });
+
+  it("reads an HTTP-date relative to now", () => {
+    const nowMs = Date.parse("2026-09-03T00:00:00Z");
+    expect(parseRetryAfterMs("Thu, 03 Sep 2026 00:02:00 GMT", nowMs)).toBe(120_000);
+  });
+
+  it("ignores a past HTTP-date, empty, and unparseable values", () => {
+    const nowMs = Date.parse("2026-09-03T00:00:00Z");
+    expect(parseRetryAfterMs("Thu, 03 Sep 2026 00:00:00 GMT", nowMs)).toBeUndefined();
+    expect(parseRetryAfterMs("Wed, 02 Sep 2026 23:59:00 GMT", nowMs)).toBeUndefined();
+    expect(parseRetryAfterMs("", nowMs)).toBeUndefined();
+    expect(parseRetryAfterMs("soon", nowMs)).toBeUndefined();
+    expect(parseRetryAfterMs(null, nowMs)).toBeUndefined();
+  });
+
+  it("clamps an absurd delay to a day so one bad header cannot park claiming forever", () => {
+    expect(parseRetryAfterMs("999999999", 0)).toBe(24 * 60 * 60 * 1000);
   });
 });

@@ -67,7 +67,8 @@ export type TickResult =
   | { action: "idle" }
   | { action: "claimed"; planId: string; startsAt?: number; endsAt?: number }
   | { action: "failed"; outcome: Extract<ClaimOutcome, { ok: false }>; holdMs: number }
-  | { action: "error"; message: string; holdMs: number };
+  | { action: "error"; message: string; holdMs: number }
+  | { action: "rate_limited"; retryInMs: number };
 
 
 export class ClaimScheduler {
@@ -84,6 +85,16 @@ export class ClaimScheduler {
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private readonly notify: (message: string) => void;
+  /**
+   * End of the current client-wide 429 pause (epoch ms; 0 = not limited).
+   *
+   * Rate limiting at ZCode is keyed to the caller, not the account, so this is
+   * deliberately NOT part of `holdUntil`: one 429 must pause every stored
+   * account at once. It also makes the pause logged once per window instead of
+   * once per account per tick, which is how the original flood looked in the
+   * session log.
+   */
+  private rateLimitedUntil = 0;
 
   constructor(private readonly deps: ClaimSchedulerDeps) {
     this.now = deps.now ?? Date.now;
@@ -94,6 +105,9 @@ export class ClaimScheduler {
   /** Milliseconds until the next meaningful wake (earliest account hold end). */
   nextWakeInMs(): number {
     const nowMs = this.now();
+    // A client-wide rate limit outranks any per-account hold: nothing may go
+    // out before it lifts, so waking earlier only burns another 429.
+    if (nowMs < this.rateLimitedUntil) return this.rateLimitedUntil - nowMs;
     const accounts = this.deps.listAccounts();
     if (accounts.length === 0) return this.deps.config.pollIntervalMs;
     let earliest = Number.POSITIVE_INFINITY;
@@ -120,6 +134,10 @@ export class ClaimScheduler {
     let aggregate: TickResult | undefined;
     for (const account of accounts) {
       const result = await this.tickAccount(account);
+      // A 429 is a statement about this client, not this account. Continuing
+      // the rotation would send N-1 more requests into a closed window, which
+      // is exactly the storm the gateway is complaining about.
+      if (result.action === "rate_limited") return result;
       if (!aggregate) {
         aggregate = result;
         continue;
@@ -148,16 +166,23 @@ export class ClaimScheduler {
     const holdUntil = this.holdUntil.get(account.accountId) ?? 0;
     if (nowMs < holdUntil) return { action: "skipped_hold" };
 
+    // Client-wide 429 window: no request may leave until it lifts, so this is
+    // checked before the preview call rather than being folded into holdUntil.
+    if (nowMs < this.rateLimitedUntil) return { action: "skipped_hold" };
+
     const client = this.deps.createClient(account);
     let plans: ClaimablePlan[];
     try {
       plans = await client.getPreviews();
     } catch (error) {
-      // 404 = campaign endpoint not deployed yet (expected pre-launch state);
-      // poll at normal cadence instead of error backoff.
-      if (error instanceof ClaimPreviewError && error.status === 404) {
-        this.hold(account, this.deps.config.pollIntervalMs);
-        return { action: "idle" };
+      if (error instanceof ClaimPreviewError) {
+        // 404 = campaign endpoint not deployed yet (expected pre-launch state);
+        // poll at normal cadence instead of error backoff.
+        if (error.status === 404) {
+          this.hold(account, this.deps.config.pollIntervalMs);
+          return { action: "idle" };
+        }
+        if (error.status === 429) return this.tripRateLimit(error.retryAfterMs, error.message);
       }
       return this.errorBackoff(account, `preview failed: ${(error as Error).message}`);
     }
@@ -201,6 +226,12 @@ export class ClaimScheduler {
       return { action: "claimed", planId: target.planId, startsAt: outcome.startsAt, endsAt: outcome.endsAt };
     }
 
+    if (outcome.failureKind === "http_error" && Number(outcome.code) === 429) {
+      // Same limit, different endpoint: the claim POST can 429 even when the
+      // preview GET went through, so both entry points share the gate.
+      return this.tripRateLimit(outcome.retryAfterMs, outcome.message);
+    }
+
     const holdMs = this.holdForFailure(outcome.failureKind, outcome.failureEndsAt, nowMs);
     this.hold(account, holdMs);
     const message = `ZCode claim: ${outcome.failureKind} (${outcome.code}) — ${outcome.message}; retry in ${Math.round(holdMs / 1000)}s`;
@@ -234,6 +265,26 @@ export class ClaimScheduler {
     this.hold(account, holdMs);
     this.log(`claim: ${message}; retry in ${Math.round(holdMs / 1000)}s`);
     return { action: "error", message, holdMs };
+  }
+
+  /**
+   * Enter (or extend) the client-wide 429 pause.
+   *
+   * `retryAfterMs` is honoured when the gateway sent `Retry-After`; the ZCode
+   * gateway has been seen answering a bare 429, hence the cooldown fallback.
+   * The log line fires only for the first 429 of a window - the flood this
+   * fixes was the same message repeated per account, per tick, for hours.
+   */
+  private tripRateLimit(retryAfterMs: number | undefined, detail: string): TickResult {
+    const nowMs = this.now();
+    const pauseMs = retryAfterMs ?? this.deps.config.cooldownMs;
+    const firstOfWindow = nowMs >= this.rateLimitedUntil;
+    this.rateLimitedUntil = Math.max(this.rateLimitedUntil, nowMs + pauseMs);
+    const retryInMs = this.rateLimitedUntil - nowMs;
+    if (firstOfWindow) {
+      this.log(`claim: rate limited (429) — ${detail}; pausing every account for ${Math.round(retryInMs / 1000)}s`);
+    }
+    return { action: "rate_limited", retryInMs };
   }
 }
 

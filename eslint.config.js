@@ -82,7 +82,7 @@ export default defineConfig(
   },
 
   {
-    files: ["tests/**/*.ts", "live-zcode.ts", "solve-probe.ts"],
+    files: ["tests/**/*.ts", "live-zcode.ts", "solve-probe.ts", "rate-limit-probe.ts"],
     rules: {
       // Test doubles legitimately match async signatures without awaiting, and
       // pass bare method references into fakes.

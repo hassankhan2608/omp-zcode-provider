@@ -16,6 +16,8 @@ interface AccountHarness {
   claimOutcome: ClaimOutcome | Error;
   captchaResult: { verifyParam: string; region?: string } | Error;
   claimCalls: Array<{ accountId: string; planId: string }>;
+  /** Proves a rate-limit pause skips the network entirely for later accounts. */
+  previewCalls: number;
 }
 
 function makeHarness(configOverrides: Partial<{ planId: string; pollIntervalMs: number; cooldownMs: number }> = {}) {
@@ -30,6 +32,7 @@ function makeHarness(configOverrides: Partial<{ planId: string; pollIntervalMs: 
       claimOutcome: { ok: true, planId: "weekend-1" },
       captchaResult: { verifyParam: "cap", region: "cn" },
       claimCalls: [],
+      previewCalls: 0,
     };
     byId.set(accountId, fresh);
     return fresh;
@@ -46,7 +49,10 @@ function makeHarness(configOverrides: Partial<{ planId: string; pollIntervalMs: 
     createClient: (account) => {
       const h = makeHarnessFor(account.accountId);
       return {
-        getPreviews: () => (h.previewError ? Promise.reject(h.previewError) : Promise.resolve(h.plans)),
+        getPreviews: () => {
+          h.previewCalls += 1;
+          return h.previewError ? Promise.reject(h.previewError) : Promise.resolve(h.plans);
+        },
         claim: (planId) => {
           h.claimCalls.push({ accountId: account.accountId, planId });
           return h.claimOutcome instanceof Error ? Promise.reject(h.claimOutcome) : Promise.resolve(h.claimOutcome);
@@ -252,6 +258,76 @@ describe("ClaimScheduler multi-account rotation", () => {
 
     const result = await h.scheduler.tick(); // acc-2 still claimable
     expect((result as { action: string }).action).toBe("claimed");
+  });
+});
+
+describe("ClaimScheduler rate limiting (HTTP 429)", () => {
+  /** A preview rejection shaped exactly like the client's 429 path. */
+  function tooManyRequests(retryAfterMs?: number): ClaimPreviewError {
+    return new ClaimPreviewError("claim preview failed (429): HTTP 429", 429, 429, retryAfterMs);
+  }
+
+  it("pauses every account after a single 429 instead of previewing the rest", async () => {
+    const h = makeHarness();
+    h.accounts.push({ jwt: "jwt-2", accountId: "acc-2", email: "b@x.dev" });
+    h.primary.previewError = tooManyRequests();
+
+    const result = await h.scheduler.tick();
+
+    expect(result.action).toBe("rate_limited");
+    // The limit is per client, not per account: acc-2 must not add to the storm.
+    expect(h.forAccount("acc-2").previewCalls).toBe(0);
+    expect(h.forAccount("acc-2").claimCalls).toEqual([]);
+  });
+
+  it("honours Retry-After and resumes claiming once the window passes", async () => {
+    const h = makeHarness();
+    h.primary.previewError = tooManyRequests(120_000);
+
+    await h.scheduler.tick();
+    expect(h.scheduler.nextWakeInMs()).toBe(120_000);
+
+    h.advance(60_000);
+    const stillPaused = await h.scheduler.tick();
+    expect(stillPaused.action).toBe("skipped_hold");
+
+    h.advance(60_001);
+    h.primary.previewError = undefined;
+    const resumed = await h.scheduler.tick();
+    expect(resumed.action).toBe("claimed");
+  });
+
+  it("falls back to the configured cooldown when the gateway sends no Retry-After", async () => {
+    const h = makeHarness();
+    h.primary.previewError = tooManyRequests();
+
+    await h.scheduler.tick();
+    expect(h.scheduler.nextWakeInMs()).toBe(600_000);
+  });
+
+  it("logs the pause once per window, not once per account per tick", async () => {
+    const h = makeHarness();
+    h.accounts.push({ jwt: "jwt-2", accountId: "acc-2", email: "b@x.dev" });
+    h.primary.previewError = tooManyRequests();
+    h.forAccount("acc-2").previewError = tooManyRequests();
+
+    await h.scheduler.tick();
+    h.advance(1_000);
+    await h.scheduler.tick();
+
+    // The observed bug was one 429 line per account per tick, forever.
+    expect(h.logs.filter((line) => line.includes("rate limited"))).toHaveLength(1);
+  });
+
+  it("also trips on a 429 from the claim POST itself", async () => {
+    const h = makeHarness();
+    h.accounts.push({ jwt: "jwt-2", accountId: "acc-2", email: "b@x.dev" });
+    h.primary.claimOutcome = { ok: false, planId: "weekend-1", failureKind: "http_error", code: 429, message: "HTTP 429" };
+
+    const result = await h.scheduler.tick();
+
+    expect(result.action).toBe("rate_limited");
+    expect(h.forAccount("acc-2").previewCalls).toBe(0);
   });
 });
 

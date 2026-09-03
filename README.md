@@ -75,14 +75,30 @@ Porting steps:
 
 Set `ZCODE_API_REPO` if your checkout is not at `~/repos/zcode-api`.
 
+## Auto-claim, and why it stays quiet
+
+Two guards exist because the naive version storms the ZCode gateway:
+
+- **Root TUI only.** `session_start` starts the scheduler only when
+  `ctx.mode === "tui"` and the session header has no `parentSession`. Every
+  subagent/task/fork is a full OMP session, so without this a fan-out of ten
+  workers previews every stored account ten times at once. `/claim` stays
+  available in every mode as the explicit trigger.
+- **Client-wide 429 pause.** Rate limiting is keyed to the caller, not the
+  account, so a single 429 (from either the preview GET or the claim POST)
+  pauses *all* accounts via `ClaimScheduler`'s `rateLimitedUntil`, honours
+  `Retry-After` when present, and logs once per window. The bug it replaces
+  logged one 429 line per account per tick indefinitely.
+
 ## Commands
 
 ```bash
-bun test             # 360 tests, no network except the marked live checks
+bun test             # 383 tests, no network except the marked live checks
 bun run typecheck    # tsc --noEmit
 bun run parity       # vendored-file drift check
 bun run lint         # typed ESLint; currently zero findings, keep it that way
 bun run ./solve-probe.ts   # real captcha solves through the persistent worker
+bun run ./rate-limit-probe.ts  # 429 pause behaviour + one live preview call
 ```
 
 ## Environment switches
@@ -91,7 +107,7 @@ bun run ./solve-probe.ts   # real captcha solves through the persistent worker
 | --- | --- |
 | `ZCODE_CLAIM_AUTO=0` | Disable the automatic claim scheduler entirely. |
 | `ZCODE_CLAIM_POLL_MS` | Claim poll cadence (default 300000). |
-| `ZCODE_CLAIM_COOLDOWN_MS` | Backoff after a failed claim (default 600000). |
+| `ZCODE_CLAIM_COOLDOWN_MS` | Backoff after a failed claim, and the fallback pause for a 429 with no `Retry-After` (default 600000). |
 | `ZCODE_CLAIM_FIREWORKS=0` | Skip the celebration widget. |
 | `CAPTCHA_POOL_MIN` / `CAPTCHA_POOL_MAX` / `CAPTCHA_SOLVE_CONCURRENCY` | Override the pool sizing chosen for single-user OMP. |
 | `CAPTCHA_DEBUG=1` | Restore upstream's solver diagnostics inside the worker. |

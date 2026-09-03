@@ -63,6 +63,8 @@ export type ClaimOutcome =
       code: number | string;
       message: string;
       failureEndsAt?: number;
+      /** `Retry-After` from a 429, in ms; only set when the gateway sent one. */
+      retryAfterMs?: number;
     };
 
 export function classifyClaimCode(code: number | string): ClaimFailureKind {
@@ -89,17 +91,48 @@ export function classifyClaimCode(code: number | string): ClaimFailureKind {
   }
 }
 
-/** Preview failure with the HTTP status preserved (404 = campaign not deployed). */
+/**
+ * Preview failure with the HTTP status preserved (404 = campaign not deployed,
+ * 429 = client-wide rate limit) plus the parsed `Retry-After` when present, so
+ * the scheduler can pause for exactly as long as the gateway asked.
+ */
 export class ClaimPreviewError extends Error {
   readonly status: number;
   readonly code: number | string;
+  readonly retryAfterMs: number | undefined;
 
-  constructor(message: string, status: number, code: number | string) {
+  constructor(message: string, status: number, code: number | string, retryAfterMs?: number) {
     super(message);
     this.name = "ClaimPreviewError";
     this.status = status;
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** Upper bound on any server-requested pause: one bad header must not park claiming forever. */
+const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Parse an RFC 9110 `Retry-After` value (delay-seconds or HTTP-date) into ms.
+ *
+ * Exported because it is the one piece of 429 handling worth pinning directly:
+ * the ZCode gateway has been observed answering 429 with no header at all, and
+ * `undefined` (not `0`) is what makes the scheduler fall back to its cooldown.
+ */
+export function parseRetryAfterMs(value: string | null, nowMs: number): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds)) {
+    if (seconds <= 0) return undefined;
+    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+  }
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isFinite(dateMs)) return undefined;
+  const delta = dateMs - nowMs;
+  return delta > 0 ? Math.min(delta, MAX_RETRY_AFTER_MS) : undefined;
 }
 
 interface RawEntitlement {
@@ -220,7 +253,7 @@ export function createClaimClient(options: ClaimClientOptions): ClaimClient {
     method: string,
     path: string,
     init: { body?: unknown; headers: Record<string, string>; signal?: AbortSignal },
-  ): Promise<{ status: number; json: Record<string, unknown> | undefined; bodyText: string }> {
+  ): Promise<{ status: number; json: Record<string, unknown> | undefined; bodyText: string; retryAfterMs?: number }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onExternalAbort = () => controller.abort();
@@ -240,7 +273,10 @@ export function createClaimClient(options: ClaimClientOptions): ClaimClient {
       } catch {
         // non-JSON body surfaced via bodyText
       }
-      return { status: response.status, json, bodyText };
+      // Only 429/503 carry a meaningful Retry-After; parsing unconditionally
+      // keeps this hot path branch-free and costs nothing when absent.
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), Date.now());
+      return { status: response.status, json, bodyText, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
     } finally {
       clearTimeout(timer);
       init.signal?.removeEventListener("abort", onExternalAbort);
@@ -267,10 +303,10 @@ export function createClaimClient(options: ClaimClientOptions): ClaimClient {
     async getPreviews(signal?: AbortSignal): Promise<ClaimablePlan[]> {
       const url = `/api/v1/zcode-plan/billing/preview?app_version=${encodeURIComponent(appVersion)}&platform=${encodeURIComponent(platform)}`;
       const headers: Record<string, string> = { ...claimIdentityHeaders, authorization: `Bearer ${options.account.jwt}` };
-      const { status, json, bodyText } = await request("GET", url, { headers, signal });
+      const { status, json, bodyText, retryAfterMs } = await request("GET", url, { headers, signal });
       if (status < 200 || status >= 300 || (json?.code !== undefined && json.code !== 0) || json?.data === undefined) {
         const { code, message } = unwrapError(json, status, bodyText);
-        throw new ClaimPreviewError(`claim preview failed (${code}): ${message}`, status, code);
+        throw new ClaimPreviewError(`claim preview failed (${code}): ${message}`, status, code, retryAfterMs);
       }
       const data = json.data as { plans?: RawPlan[] };
       return (data.plans ?? []).flatMap((raw) => {
@@ -291,7 +327,7 @@ export function createClaimClient(options: ClaimClientOptions): ClaimClient {
         "X-Aliyun-Captcha-Verify-Param": captcha.verifyParam,
       };
       if (captcha.region) headers["X-Aliyun-Captcha-Verify-Region"] = captcha.region;
-      const { status, json, bodyText } = await request("POST", "/api/v1/zcode-plan/billing/claim", {
+      const { status, json, bodyText, retryAfterMs } = await request("POST", "/api/v1/zcode-plan/billing/claim", {
         body: { plan_id: planId },
         headers,
         signal,
@@ -318,6 +354,7 @@ export function createClaimClient(options: ClaimClientOptions): ClaimClient {
         code,
         message,
         ...(failureEndsAt !== undefined ? { failureEndsAt } : {}),
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
       };
     },
   };

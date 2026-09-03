@@ -10,5 +10,5 @@
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "live-zcode.ts", "solve-probe.ts", "upstream-parity.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "live-zcode.ts", "solve-probe.ts", "rate-limit-probe.ts", "upstream-parity.ts"]
 }
