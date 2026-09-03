@@ -22,10 +22,13 @@ import tseslint from "typescript-eslint";
  * wrong about this runtime (bun:test's `expect().rejects` typing).
  */
 export default defineConfig(
-  // Every file vendored from zcode-api, plus the worker that only wraps it.
-  // They are kept byte-identical to upstream (and carry upstream's
-  // `@ts-nocheck`), so linting them would create diff noise against the next
-  // sync - which costs far more than the findings are worth.
+  // Every file vendored from zcode-api. They are kept byte-identical to
+  // upstream (and `captcha-happy.ts` carries upstream's `@ts-nocheck`), so
+  // linting them would create diff noise against the next sync - which costs
+  // far more than the findings are worth.
+  //
+  // `src/captcha-worker.ts` is deliberately NOT here: it is our own thin
+  // wrapper, not a copy, so it gets the same scrutiny as the rest of src/.
   //
   // This list MUST match `VENDORED_FILES` in `upstream-parity.ts`; a test in
   // `tests/upstream-parity.test.ts` fails if the two ever drift.
@@ -35,7 +38,6 @@ export default defineConfig(
     "src/captcha-pool.ts",
     "src/captcha-token.ts",
     "src/captcha-cpu-governor.ts",
-    "src/captcha-worker.ts",
     "tests/captcha-happy.test.ts",
     "tests/captcha-pool.test.ts",
     "tests/captcha-token.test.ts",

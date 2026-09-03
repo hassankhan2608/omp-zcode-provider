@@ -9,6 +9,7 @@
  * isolated from the agent process.
  */
 import { parentPort } from "node:worker_threads";
+import { redactCaptchaSecrets } from "./captcha-redact.js";
 
 interface SolveRequest {
   id: string;
@@ -68,7 +69,9 @@ port.on("message", (request: SolveRequest) => {
       const response: SolveResponse = {
         id: request.id,
         ok: false,
-        error: error instanceof Error ? error.message : String(error),
+        // Vendored sandbox messages can quote the verify param (upstream is a
+        // proxy and logs it freely); scrub before it leaves the worker.
+        error: redactCaptchaSecrets(error instanceof Error ? error.message : String(error)),
       };
       port.postMessage(response);
     });

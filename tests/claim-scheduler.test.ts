@@ -254,3 +254,20 @@ describe("ClaimScheduler multi-account rotation", () => {
     expect((result as { action: string }).action).toBe("claimed");
   });
 });
+
+describe("ClaimScheduler public surface", () => {
+  it("owns no timer of its own: OMP drives ticks through ctx.setInterval", () => {
+    // Upstream's scheduler ran its own setTimeout loop because it lived in a
+    // long-running proxy. In OMP the session owns scheduling (contained timers,
+    // cleared on session_shutdown), so a second lifecycle here would be dead
+    // code that can only drift out of sync with the session's own cadence.
+    const h = makeHarness();
+    const surface = h.scheduler as unknown as Record<string, unknown>;
+    for (const member of ["start", "stop", "isStopped", "scheduleNext"]) {
+      expect(typeof surface[member]).toBe("undefined");
+    }
+    // What the session actually calls stays.
+    expect(typeof h.scheduler.tick).toBe("function");
+    expect(typeof h.scheduler.nextWakeInMs).toBe("function");
+  });
+});

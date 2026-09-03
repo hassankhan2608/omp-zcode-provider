@@ -118,6 +118,50 @@ describe("claimCelebration", () => {
   });
 });
 
+describe("claimCelebration with mixed unit types", () => {
+  const entitlement = (showName: string, grantUnits: number, unitType: string) => ({
+    entitlementId: `e-${showName}`,
+    showName,
+    meter: unitType,
+    unitType,
+    capabilities: ["glm-5.3-flash"],
+    grantUnits,
+    period: "one_time",
+    priority: 0,
+  });
+
+  it("never adds tokens to a different unit under one label", () => {
+    // Today every Start Plan entitlement is denominated in tokens, so the old
+    // single-total headline read correctly. The moment ZCode grants a plan that
+    // mixes meters, summing them and labelling the result with the FIRST unit
+    // reports a number that does not exist.
+    const { headline, lines } = claimCelebration({
+      plan: {
+        ...PLAN,
+        entitlements: [entitlement("GLM-5.3-Flash", 100_000_000, "token"), entitlement("Fast Lane", 500, "request")],
+      },
+      outcome: { ok: true, planId: PLAN.planId },
+      account: "a@b.dev",
+    });
+
+    expect(headline).toContain("100,000,000 TOKENS");
+    expect(headline).toContain("500 REQUESTS");
+    expect(lines.join("\n")).toContain("Fast Lane · 500 requests · one-time");
+  });
+
+  it("still shows a single total when every entitlement shares a unit", () => {
+    const { headline } = claimCelebration({
+      plan: {
+        ...PLAN,
+        entitlements: [entitlement("GLM-5.3-Flash", 100_000_000, "token"), entitlement("GLM-5.3", 20_000_000, "token")],
+      },
+      outcome: { ok: true, planId: PLAN.planId },
+      account: "a@b.dev",
+    });
+    expect(headline).toBe("120,000,000 TOKENS");
+  });
+});
+
 describe("mergeCelebrations", () => {
   const card = (account: string, headline = "100,000,000 TOKENS") => ({
     headline,

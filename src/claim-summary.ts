@@ -57,13 +57,25 @@ function validUntil(endsAtSec: number): string {
 export function claimCelebration(input: ClaimCelebrationInput): ClaimCelebration {
   const { plan, outcome, account } = input;
   const entitlements = plan.entitlements;
-  const total = entitlements.reduce((sum, entitlement) => sum + entitlement.grantUnits, 0);
-  const unit = entitlements[0] ? unitLabel(entitlements[0]).toUpperCase() : "";
 
-  const headline = total > 0 ? `${total.toLocaleString("en-US")} ${unit}` : plan.name;
+  // Totals are grouped by unit, never summed across them. A plan mixing meters
+  // (tokens + requests, say) would otherwise print one number under the first
+  // entitlement's label - a quota the account never received. Insertion order
+  // is preserved so the headline follows ZCode's own entitlement order.
+  const totalsByUnit = new Map<string, number>();
+  for (const entitlement of entitlements) {
+    const unit = unitLabel(entitlement);
+    totalsByUnit.set(unit, (totalsByUnit.get(unit) ?? 0) + entitlement.grantUnits);
+  }
+
+  const granted = [...totalsByUnit].filter(([, amount]) => amount > 0);
+  const headline =
+    granted.length > 0
+      ? granted.map(([unit, amount]) => `${amount.toLocaleString("en-US")} ${unit.toUpperCase()}`).join(" + ")
+      : plan.name;
 
   const lines: string[] = [];
-  if (total > 0) lines.push(plan.name);
+  if (granted.length > 0) lines.push(plan.name);
   for (const entitlement of entitlements) {
     const period = entitlement.period.trim().replace(/_/g, "-");
     lines.push(
@@ -74,7 +86,8 @@ export function claimCelebration(input: ClaimCelebrationInput): ClaimCelebration
   if (endsAt !== undefined && Number.isFinite(endsAt)) lines.push(validUntil(endsAt));
   lines.push(account);
 
-  const quota = entitlements[0] ? ` — ${shortUnits(total)} ${unitLabel(entitlements[0])}` : "";
+  const quota =
+    granted.length > 0 ? ` — ${granted.map(([unit, amount]) => `${shortUnits(amount)} ${unit}`).join(" + ")}` : "";
   return { headline, lines, notice: `Claimed ${plan.name}${quota} for ${account}` };
 }
 

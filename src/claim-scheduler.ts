@@ -71,7 +71,6 @@ export type TickResult =
 
 
 export class ClaimScheduler {
-  private stopped = false;
   private readonly holdUntil = new Map<string, number>();
   /**
    * Accounts stopped by `login_required`, keyed by the JWT that was rejected.
@@ -82,7 +81,6 @@ export class ClaimScheduler {
    * next tick sees a credential it never rejected.
    */
   private readonly stoppedCredentials = new Map<string, string>();
-  private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private readonly notify: (message: string) => void;
@@ -91,23 +89,6 @@ export class ClaimScheduler {
     this.now = deps.now ?? Date.now;
     this.log = deps.log ?? (() => {});
     this.notify = deps.notify ?? this.log;
-  }
-
-  isStopped(): boolean {
-    return this.stopped;
-  }
-
-  start(): void {
-    if (this.stopped) return;
-    this.scheduleNext(0);
-  }
-
-  stop(): void {
-    this.stopped = true;
-    if (this.timer !== null) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
   }
 
   /** Milliseconds until the next meaningful wake (earliest account hold end). */
@@ -125,11 +106,12 @@ export class ClaimScheduler {
   }
 
   /**
-   * One poll→claim cycle across all accounts. Exposed for tests; `start()`
-   * drives it on a timer. Per-account failures never block siblings.
+   * One poll→claim cycle across all accounts.
+   *
+   * The session owns the cadence (`ctx.setInterval`), so this is the whole
+   * public entry point. Per-account failures never block siblings.
    */
   async tick(): Promise<TickResult> {
-    if (this.stopped) return { action: "stopped" };
     // Arrow keeps `this` with the deps object; the comparator stays optional,
     // so without one we fall through to Array#sort's default exactly as before.
     const compare = this.deps.compareAccounts;
@@ -151,7 +133,6 @@ export class ClaimScheduler {
   }
 
   private async tickAccount(account: SchedulerAccount): Promise<TickResult> {
-    if (this.stopped) return { action: "stopped" };
     // Stopped by login_required, and the same credential is still stored: a
     // retry would just fail again. A different JWT means the operator logged
     // in since, so the stop clears itself - the scheduler has no hook into
@@ -253,16 +234,6 @@ export class ClaimScheduler {
     this.hold(account, holdMs);
     this.log(`claim: ${message}; retry in ${Math.round(holdMs / 1000)}s`);
     return { action: "error", message, holdMs };
-  }
-
-  private scheduleNext(delayMs: number): void {
-    if (this.stopped) return;
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      void this.tick().finally(() => this.scheduleNext(this.nextWakeInMs()));
-    }, delayMs);
-    // Never keep OMP alive for the scheduler alone.
-    this.timer.unref?.();
   }
 }
 
