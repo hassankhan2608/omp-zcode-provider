@@ -4,6 +4,18 @@
  * Uses an isolated HOME so no global plugin, provider checkout, credential, or
  * node_modules tree can make a broken package appear healthy. The target must
  * be an immutable Git ref in CI; callers pass it explicitly.
+ *
+ * What this asserts, and why it stops where it does: `omp install` is the step
+ * that resolves dependencies in the plugin store and imports every declared
+ * extension entry, rolling back on failure. That import is the exact surface
+ * that caught the two real packaging defects - a missing `happy-dom` and an
+ * optional-peer `@oh-my-pi/pi-catalog` that Bun never materialized.
+ *
+ * Model discovery is deliberately NOT asserted here: `omp models` only lists a
+ * provider once a credential for it exists, so in a credential-free HOME even
+ * built-in `anthropic` returns an empty list. ZCode is OAuth-only, so no
+ * secretless environment can enumerate its catalog. Model discovery is
+ * verified on a real workstation instead, where accounts are already stored.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -45,9 +57,12 @@ try {
     throw new Error(`plugin inventory did not identify omp-zcode-provider\n${plugins}`);
   }
 
-  const models = await runOmp(["models", "zcode", "--json"]);
-  if (!models.includes("GLM-5.3")) {
-    throw new Error(`installed provider exposed no GLM-5.3 model\n${models}`);
+  const doctor = await runOmp(["plugin", "doctor", "--json"]);
+  if (!doctor.includes("plugin:omp-zcode-provider")) {
+    throw new Error(`plugin doctor did not report the installed provider\n${doctor}`);
+  }
+  if (doctor.includes('"status": "error"')) {
+    throw new Error(`plugin doctor reported a fault\n${doctor}`);
   }
   console.log(`clean install passed: ${target}`);
 } finally {
