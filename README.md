@@ -23,6 +23,24 @@ OMP's Git PluginManager installs the package dependencies and validates
 clean-device installation method: local paths are development links and do
 not install the linked package's dependencies.
 
+### Updating
+
+A Git install is pinned at install time; OMP never re-pulls it when this
+repository gets a new push. Update on demand:
+
+```bash
+omp install github:hassankhan2608/omp-zcode-provider --force
+```
+
+`omp plugin upgrade` will not do it: that walks *marketplace* plugins only, and
+so does the `marketplace.autoUpdate` setting. Serving this provider through a
+marketplace catalog is not an option either - OMP's marketplace is
+Claude-plugin-compatible, so a git-sourced entry is cloned with no dependency
+install (`happy-dom` and `@oh-my-pi/pi-catalog` end up missing and the
+extension is silently skipped), and npm-sourced catalog entries are rejected
+with "npm plugin sources are not yet supported". Pinned-until-asked is
+therefore the only working contract today.
+
 ## Why the code is split the way it is
 
 | Area | File | Note |
