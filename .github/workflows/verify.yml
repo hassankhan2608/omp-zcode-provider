@@ -23,12 +23,12 @@ jobs:
         run: bun run typecheck
       - name: Typed lint
         run: bun run lint
-      - name: Checkout pinned zcode-api
-        uses: actions/checkout@v4
-        with:
-          repository: TriDefender/zcode-api
-          ref: 5fcb778
-          path: .upstream/zcode-api
+      # `git clone`, not actions/checkout: the parity tool resolves
+      # `origin/master` and tag descriptions, and reads pinned blobs with
+      # `git show <ref>:<path>`. A detached single-commit checkout has none of
+      # those refs.
+      - name: Clone pinned zcode-api
+        run: git clone https://github.com/TriDefender/zcode-api.git .upstream/zcode-api
       - name: Vendored parity
         env:
           ZCODE_API_REPO: ${{ github.workspace }}/.upstream/zcode-api
