@@ -12,6 +12,17 @@ implementation in this extension.
 /claim                check every stored account and claim what is available
 ```
 
+## Install
+
+```bash
+omp install github:hassankhan2608/omp-zcode-provider
+```
+
+OMP's Git PluginManager installs the package dependencies and validates
+`src/extension.ts` before activation. Do not use a local filesystem path as a
+clean-device installation method: local paths are development links and do
+not install the linked package's dependencies.
+
 ## Why the code is split the way it is
 
 | Area | File | Note |
@@ -99,6 +110,7 @@ bun run parity       # vendored-file drift check
 bun run lint         # typed ESLint; currently zero findings, keep it that way
 bun run ./solve-probe.ts   # real captcha solves through the persistent worker
 bun run ./rate-limit-probe.ts  # 429 pause behaviour + one live preview call
+bun run install-smoke -- "$TARGET"  # isolated-HOME OMP Git install
 ```
 
 ## Environment switches
