@@ -11,8 +11,10 @@ jobs:
   provider:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      # checkout@v7 / setup-bun@v2.2.0: the v4 checkout bundles a Node 20
+      # action runtime, which the runner now force-upgrades and warns about.
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: 1.4.0
       - name: Install dependencies
@@ -35,7 +37,7 @@ jobs:
         run: bun run parity
       - name: Install OMP CLI
         if: github.event_name == 'push'
-        run: bun add --global @oh-my-pi/pi-coding-agent@18.1.5
+        run: bun add --global @oh-my-pi/pi-coding-agent@18.1.10
       - name: Clean-device exact-SHA install
         if: github.event_name == 'push'
         run: bun run install-smoke.ts "github:${{ github.repository }}#${{ github.sha }}"
