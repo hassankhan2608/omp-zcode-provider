@@ -1,0 +1,41 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Unit tests
+        run: bun test
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Typed lint
+        run: bun run lint
+      - name: Checkout pinned zcode-api
+        uses: actions/checkout@v4
+        with:
+          repository: TriDefender/zcode-api
+          ref: 5fcb778
+          path: .upstream/zcode-api
+      - name: Vendored parity
+        env:
+          ZCODE_API_REPO: ${{ github.workspace }}/.upstream/zcode-api
+        run: bun run parity
+      - name: Install OMP CLI
+        if: github.event_name == 'push'
+        run: bun add --global @oh-my-pi/pi-coding-agent@18.1.5
+      - name: Clean-device exact-SHA install
+        if: github.event_name == 'push'
+        run: bun run install-smoke.ts "github:${{ github.repository }}#${{ github.sha }}"

@@ -113,6 +113,11 @@ bun run ./rate-limit-probe.ts  # 429 pause behaviour + one live preview call
 bun run install-smoke -- "$TARGET"  # isolated-HOME OMP Git install
 ```
 
+Unit tests are offline. CI separately checks the vendored files against pinned
+zcode-api commit `5fcb778`; on every push it installs that exact provider
+commit through OMP in an empty HOME. The install smoke needs no ZCode
+credential and never calls the ZCode gateway.
+
 ## Environment switches
 
 | Variable | Effect |
