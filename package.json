@@ -25,7 +25,6 @@
   },
   "peerDependenciesMeta": {
     "@oh-my-pi/pi-ai": { "optional": true },
-    "@oh-my-pi/pi-catalog": { "optional": true },
     "@oh-my-pi/pi-coding-agent": { "optional": true }
   },
   "devDependencies": {
