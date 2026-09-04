@@ -35,6 +35,12 @@ interface SolveResponse {
   error?: string;
 }
 
+/** Sandbox stderr line forwarded by the worker; carries no solve id. */
+interface DiagnosticMessage {
+  kind: "diag";
+  text: string;
+}
+
 /** The slice of `node:worker_threads` Worker this module uses. */
 export interface SolverWorker {
   postMessage(message: { id: string; scene: string; region: string; prefix: string }): void;
@@ -50,6 +56,11 @@ export interface CaptchaSolverDeps {
   startTimer: (callback: () => void, ms: number) => unknown;
   clearTimer: (handle: unknown) => void;
   concurrency?: number;
+  /**
+   * Sink for sandbox diagnostics the worker forwards instead of writing to the
+   * shared stderr descriptor. Defaults to dropping them.
+   */
+  log?: (message: string) => void;
 }
 
 export interface CaptchaSolver {
@@ -94,7 +105,12 @@ export function createCaptchaSolver(deps: CaptchaSolverDeps): CaptchaSolver {
     created.unref();
 
     created.on("message", (message: never) => {
-      const response = message as unknown as SolveResponse;
+      const payload = message as unknown as DiagnosticMessage | SolveResponse;
+      if ("kind" in payload && payload.kind === "diag") {
+        deps.log?.(payload.text);
+        return;
+      }
+      const response = payload as SolveResponse;
       const solve = pending.get(response.id);
       if (!solve) return;
       pending.delete(response.id);
@@ -165,12 +181,28 @@ export function createCaptchaSolver(deps: CaptchaSolverDeps): CaptchaSolver {
   };
 }
 
+/**
+ * Sink for sandbox diagnostics, installed by the extension.
+ *
+ * The process-wide solver below is constructed at import time - long before an
+ * `ExtensionAPI` exists - and it is imported by the vendored pool, so it
+ * cannot take `pi.logger` as a constructor argument. A settable sink keeps the
+ * default (drop) safe for tests and probes.
+ */
+let diagnosticSink: ((message: string) => void) | undefined;
+
+/** Route forwarded sandbox stderr into the host logger. */
+export function setCaptchaDiagnosticSink(sink: (message: string) => void): void {
+  diagnosticSink = sink;
+}
+
 /** Process-wide instance used by the vendored captcha pool. */
 const solver = createCaptchaSolver({
   spawn: () => new Worker(WORKER_URL) as unknown as SolverWorker,
   timeoutMs: SOLVE_TIMEOUT_MS,
   startTimer: (callback, ms) => setTimeout(callback, ms),
   clearTimer: (handle) => clearTimeout(handle as NodeJS.Timeout),
+  log: (message) => diagnosticSink?.(message),
 });
 
 export function runCaptchaSolve(scene: string, region: string, prefix: string): Promise<string> {

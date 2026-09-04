@@ -10,6 +10,7 @@
  */
 import { parentPort } from "node:worker_threads";
 import { redactCaptchaSecrets } from "./captcha-redact.js";
+import { redirectStderr } from "./captcha-stderr.js";
 
 interface SolveRequest {
   id: string;
@@ -23,6 +24,15 @@ interface SolveResponse {
   ok: boolean;
   token?: string;
   error?: string;
+}
+
+/**
+ * Sandbox diagnostic forwarded instead of being written to the shared stderr.
+ * `id`-less by construction: these are stream lines, not solve results.
+ */
+interface DiagnosticMessage {
+  kind: "diag";
+  text: string;
 }
 
 const port = parentPort;
@@ -50,6 +60,15 @@ if (!/^(1|true|yes)$/i.test(process.env.CAPTCHA_DEBUG ?? "")) {
     if (typeof callback === "function") (callback as () => void)();
     return true;
   };
+  // A worker thread shares the agent's stderr descriptor, so the vendored
+  // sandbox's direct `process.stderr.write` calls (`[captcha-guest-uncaught]`
+  // when a rotated pe bundle throws) paint over the TUI mid-frame. Forward
+  // them to the parent, which logs them through `pi.logger`, instead of
+  // dropping the only evidence that a guest bundle broke.
+  redirectStderr(process.stderr, (text) => {
+    const message: DiagnosticMessage = { kind: "diag", text };
+    port.postMessage(message);
+  });
 }
 
 // One import for the worker lifetime. All solve messages share the exact

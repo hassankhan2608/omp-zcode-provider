@@ -65,6 +65,7 @@ function manualTimers() {
 function harness() {
   const workers: FakeWorker[] = [];
   const timers = manualTimers();
+  const diagnostics: string[] = [];
   const solver = createCaptchaSolver({
     spawn: () => {
       const worker = fakeWorker();
@@ -74,8 +75,9 @@ function harness() {
     timeoutMs: 90_000,
     startTimer: timers.startTimer,
     clearTimer: timers.clearTimer,
+    log: (message) => diagnostics.push(message),
   });
-  return { solver, workers, timers };
+  return { solver, workers, timers, diagnostics };
 }
 
 describe("createCaptchaSolver", () => {
@@ -149,5 +151,20 @@ describe("createCaptchaSolver", () => {
 
     await expect(attempt).rejects.toThrow(/shut down/);
     expect(h.workers[0].terminated).toBe(1);
+  });
+
+  it("routes sandbox diagnostics to the log without disturbing a live solve", async () => {
+    const h = harness();
+    const attempt = h.solver.solve("scene", "cn", "prefix");
+
+    // The worker forwards the vendored sandbox's stderr lines rather than
+    // writing them to the shared descriptor, where they would corrupt the TUI.
+    h.workers[0].emit("message", { kind: "diag", text: "[captcha-guest-uncaught] window is not defined" });
+
+    expect(h.diagnostics).toEqual(["[captcha-guest-uncaught] window is not defined"]);
+
+    const sent = h.workers[0].sent[0];
+    h.workers[0].emit("message", { id: sent.id, ok: true, token: "token" });
+    expect(await attempt).toBe("token");
   });
 });

@@ -22,6 +22,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ExtensionAPI, ExtensionCommandContext, ProviderConfig, ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 import type { CaptchaModule } from "./captcha-module.js";
 import { loadCaptcha } from "./captcha-module.js";
+import { setCaptchaDiagnosticSink } from "./captcha-solver.js";
 import { createZCodeOAuth, type EmailLookup } from "./oauth.js";
 import { dispatchStartPlanRequest } from "./request.js";
 import { decodeJwtPayload } from "./credential.js";
@@ -134,6 +135,11 @@ export function createExtension(deps: ExtensionDependencies = defaultDependencie
     // `cachedStartPlanModels` already guarantees this, but a caller-supplied
     // loader must not be able to register a provider with nothing selectable.
     const registered = models.length > 0 ? models : FALLBACK_MODELS;
+
+    // The captcha sandbox is vendored from a daemon that writes diagnostics
+    // straight to stderr; in a worker thread that descriptor is the TUI's.
+    // Route those lines into OMP's file logger instead of the screen.
+    setCaptchaDiagnosticSink((message) => pi.logger.debug(`[captcha] ${message}`));
 
     // Registration happens before any session exists, but `/login` always runs
     // inside one: capture the storage when a session starts and let the menu
