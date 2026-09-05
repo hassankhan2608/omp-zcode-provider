@@ -75,11 +75,45 @@ interface PendingSolve {
   resolve(token: string): void;
   timer: unknown;
 }
+/**
+ * A worker that cannot import `happy-dom` / `undici` failed to *start*, not to
+ * solve.
+ *
+ * The vendored sandbox imports both, and only inside the worker, so a plugin
+ * tree installed without dependencies passes registration, model discovery and
+ * `omp plugin doctor`, then reports
+ * `captcha failed after 4 attempts: Cannot find package 'happy-dom'` the first
+ * time a request hits an in-body `{"code":3007}` challenge.
+ *
+ * This is deliberately classified here rather than preflighted before the
+ * import: Bun answers `import.meta.resolve` / `require.resolve` out of its
+ * global install cache, so a preflight passes on any machine that happens to
+ * have the package cached and only fails on the machine that does not. The
+ * worker's own import error is the one honest signal.
+ */
+const MISSING_PACKAGE = /Cannot find (?:package|module) ['"]([^'"]+)['"]/;
+
+const REPAIR_COMMAND = "omp install github:hassankhan2608/omp-zcode-provider --force";
+
+/**
+ * Rewrite a start-up failure into a repair instruction, or return undefined
+ * for an ordinary solve failure.
+ */
+function asDependencyFailure(message: string): Error | undefined {
+  const match = MISSING_PACKAGE.exec(message);
+  if (!match) return undefined;
+  return new Error(
+    `zcode captcha cannot start: runtime dependency ${match[1]} is missing from the installed plugin. ` +
+      `Reinstall it so its dependencies are installed: ${REPAIR_COMMAND}`,
+  );
+}
 
 export function createCaptchaSolver(deps: CaptchaSolverDeps): CaptchaSolver {
   let worker: SolverWorker | null = null;
   let concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   const pending = new Map<string, PendingSolve>();
+  /** Set once a worker proves the install is broken; never cleared. */
+  let fatalError: Error | undefined;
 
   const rejectAll = (error: Error): void => {
     for (const solve of pending.values()) {
@@ -115,14 +149,30 @@ export function createCaptchaSolver(deps: CaptchaSolverDeps): CaptchaSolver {
       if (!solve) return;
       pending.delete(response.id);
       deps.clearTimer(solve.timer);
-      if (response.ok && response.token) solve.resolve(response.token);
-      else solve.reject(new Error(response.error || "captcha solve produced no token"));
+      if (response.ok && response.token) {
+        solve.resolve(response.token);
+        return;
+      }
+      const reason = response.error || "captcha solve produced no token";
+      const fatal = asDependencyFailure(reason);
+      if (fatal) {
+        // Latch before rejecting: the vendored pool retries four times, and a
+        // missing package cannot appear inside a running process, so every
+        // retry would spawn another worker and trip the mint-storm detector.
+        fatalError = fatal;
+        solve.reject(fatal);
+        discard(created, fatal);
+        return;
+      }
+      solve.reject(new Error(reason));
     });
 
     created.on("error", (payload: never) => {
       const error = payload as unknown as Error;
       if (worker === created) worker = null;
-      rejectAll(new Error(`captcha worker failed: ${error.message}`));
+      const fatal = asDependencyFailure(error.message);
+      if (fatal) fatalError = fatal;
+      rejectAll(fatal ?? new Error(`captcha worker failed: ${error.message}`));
     });
 
     created.on("exit", (payload: never) => {
@@ -137,6 +187,7 @@ export function createCaptchaSolver(deps: CaptchaSolverDeps): CaptchaSolver {
 
   return {
     solve(scene: string, region: string, prefix: string): Promise<string> {
+      if (fatalError) return Promise.reject(fatalError);
       const id = randomUUID();
       const { promise, resolve, reject } = Promise.withResolvers<string>();
       const current = getWorker();

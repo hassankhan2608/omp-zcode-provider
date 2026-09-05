@@ -168,3 +168,65 @@ describe("createCaptchaSolver", () => {
     expect(await attempt).toBe("token");
   });
 });
+
+describe("createCaptchaSolver missing runtime dependencies", () => {
+  /**
+   * `happy-dom` and `undici` are imported by the vendored sandbox, which runs
+   * only inside the worker. A plugin tree installed without dependencies
+   * therefore registers the provider, discovers models and passes
+   * `omp plugin doctor`; the breakage appears the first time a request hits an
+   * in-body `{"code":3007}` challenge, as
+   * `captcha failed after 4 attempts: Cannot find package 'happy-dom'`.
+   *
+   * A resolver preflight cannot detect this: Bun answers `resolve()` from its
+   * global install cache, so the check passes on a machine that happens to
+   * have the package cached and fails only on the machine that does not. The
+   * worker's own import error is the reliable signal, so it is classified
+   * here: rewritten into a repair instruction, and latched so the vendored
+   * retry loop stops spawning workers that cannot possibly start.
+   */
+  it("rewrites a missing-package failure into a repair instruction", async () => {
+    const h = harness();
+    const attempt = h.solver.solve("scene", "cn", "prefix");
+    const sent = h.workers[0].sent[0];
+    h.workers[0].emit("message", { id: sent.id, ok: false, error: "Cannot find package 'happy-dom' imported from /x/src/captcha-happy.ts" });
+
+    await expect(attempt).rejects.toThrow(/happy-dom/);
+    await expect(attempt).rejects.toThrow(/--force/);
+  });
+
+  it("latches, so retries fail immediately instead of spawning more workers", async () => {
+    const h = harness();
+    const first = h.solver.solve("scene", "cn", "prefix");
+    h.workers[0].emit("message", {
+      id: h.workers[0].sent[0].id,
+      ok: false,
+      error: "Cannot find package 'happy-dom' imported from /x/src/captcha-happy.ts",
+    });
+    await expect(first).rejects.toThrow(/happy-dom/);
+
+    await expect(h.solver.solve("scene", "cn", "prefix")).rejects.toThrow(/--force/);
+    // No second worker: the dependency cannot appear inside a running process.
+    expect(h.workers).toHaveLength(1);
+  });
+
+  it("classifies the same failure arriving as a worker error event", async () => {
+    const h = harness();
+    const attempt = h.solver.solve("scene", "cn", "prefix");
+    h.workers[0].emit("error", new Error("Cannot find package 'undici' imported from /x/src/captcha-happy.ts"));
+
+    await expect(attempt).rejects.toThrow(/undici/);
+    await expect(attempt).rejects.toThrow(/--force/);
+  });
+
+  it("does not latch on an ordinary solve failure", async () => {
+    const h = harness();
+    const first = h.solver.solve("scene", "cn", "prefix");
+    h.workers[0].emit("message", { id: h.workers[0].sent[0].id, ok: false, error: "captcha solve stall pe=x.js" });
+    await expect(first).rejects.toThrow(/stall/);
+
+    const second = h.solver.solve("scene", "cn", "prefix");
+    h.workers[0].emit("message", { id: h.workers[0].sent[1].id, ok: true, token: "token" });
+    expect(await second).toBe("token");
+  });
+});
